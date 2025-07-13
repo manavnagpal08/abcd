@@ -458,7 +458,7 @@ elif tab == "🔍 Search Resumes":
 elif tab == "📝 Candidate Notes":
     # Changed from candidate_notes_page to notes_page
     if notes_page:
-        try:
+        try:AC
             notes_page()
         except Exception as e:
             st.error(f"Error loading Candidate Notes: {e}")
