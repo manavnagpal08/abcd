@@ -10,10 +10,24 @@ import numpy as np # Added for numpy.random.uniform in dashboard section
 # Import the page functions from their respective files
 # Corrected import for email_page.py (was email_sender) and function name
 from email_page import email_candidates_page
-from screener import resume_screener_page # Ensure 'resume_screener_page' is defined as a top-level function in screener.py
 from analytics import analytics_dashboard_page
 from admin_panel import admin_panel_page # Import the admin panel page
 from utils.logger import log_user_action # Import the logging function
+
+# Conditional import for resume_screener_page
+resume_screener_page = None
+try:
+    from screener import resume_screener_page # Attempt to import the screener page function
+    print("DEBUG: Successfully imported resume_screener_page from screener.py")
+except ImportError as e:
+    print(f"ERROR: Failed to import resume_screener_page from screener.py: {e}")
+    st.error(f"Failed to load Resume Screener functionality: {e}. Please ensure 'screener.py' is correctly configured and there are no conflicting directories.")
+    log_system_event("ERROR", "RESUME_SCREENER_IMPORT_FAILED", {"error": str(e), "traceback": traceback.format_exc()})
+except Exception as e:
+    print(f"ERROR: An unexpected error occurred during import of screener.py: {e}")
+    st.error(f"An unexpected error occurred while loading Resume Screener: {e}")
+    log_system_event("ERROR", "RESUME_SCREENER_IMPORT_UNEXPECTED_ERROR", {"error": str(e), "traceback": traceback.format_exc()})
+
 
 # For pages that were using exec(f.read()), we will now import functions directly.
 # You will need to define a main function in each of these files, e.g., manage_jds_page()
@@ -143,6 +157,46 @@ except FileNotFoundError:
 st.title("🧠 ScreenerPro – AI Hiring Assistant")
 
 # --- Auth ---
+# Placeholder for login_section and is_current_user_admin
+# You would typically define these functions in a separate auth.py or similar
+# For now, we'll define minimal versions to prevent NameError
+def login_section():
+    if 'authenticated' not in st.session_state:
+        st.session_state.authenticated = False
+    
+    if st.session_state.authenticated:
+        return True
+
+    st.sidebar.header("Login")
+    username = st.sidebar.text_input("Username", key="login_username")
+    password = st.sidebar.text_input("Password", type="password", key="login_password")
+
+    if st.sidebar.button("Login"):
+        # Simple hardcoded authentication for demonstration
+        if username == "admin" and password == "adminpass":
+            st.session_state.authenticated = True
+            st.session_state.user_email = "admin@example.com" # Mock admin email
+            st.session_state.is_admin = True # Set admin status
+            st.sidebar.success("Logged in as Admin!")
+            log_user_action("admin@example.com", "LOGIN_SUCCESS", {"role": "admin"})
+            st.rerun()
+        elif username == "user" and password == "userpass":
+            st.session_state.authenticated = True
+            st.session_state.user_email = "user@example.com" # Mock regular user email
+            st.session_state.is_admin = False # Set non-admin status
+            st.sidebar.success("Logged in as User!")
+            log_user_action("user@example.com", "LOGIN_SUCCESS", {"role": "user"})
+            st.rerun()
+        else:
+            st.sidebar.error("Invalid username or password.")
+            log_user_action(username, "LOGIN_FAILED", {"reason": "Invalid credentials"})
+            st.session_state.authenticated = False
+    return st.session_state.authenticated
+
+def is_current_user_admin():
+    return st.session_state.get('is_admin', False)
+
+
 if not login_section():
     st.stop()
 
@@ -151,9 +205,13 @@ is_admin = is_current_user_admin()
 
 # --- Navigation Control ---
 navigation_options = [
-    "🏠 Dashboard", "🧠 Resume Screener", "📁 Manage JDs", "📊 Screening Analytics",
+    "🏠 Dashboard", "📁 Manage JDs", "📊 Screening Analytics",
     "📤 Email Candidates", "🔍 Search Resumes", "📝 Candidate Notes"
 ]
+# Only add Resume Screener if it was successfully imported
+if resume_screener_page:
+    navigation_options.insert(1, "🧠 Resume Screener") # Insert after Dashboard
+
 if is_admin: # Only add Admin Tools if the user is an admin
     navigation_options.append("⚙️ Admin Tools")
 navigation_options.append("🚪 Logout") # Always add Logout last
@@ -243,15 +301,26 @@ if tab == "🏠 Dashboard":
 
     with col5:
         # The div for "custom-dashboard-button" will now have custom styling
-        st.markdown("""
-        <div class="custom-dashboard-button" onclick="window.parent.postMessage({streamlit: {type: 'setSessionState', args: ['tab_override', '🧠 Resume Screener']}}, '*');">
-            <span>🧠</span>
-            <div>Resume Screener</div>
-        </div>
-        """, unsafe_allow_html=True)
-        if st.button("🧠 Resume Screener", key="dashboard_screener_button"):
-            st.session_state.tab_override = '🧠 Resume Screener'
-            st.rerun()
+        # Only show button if screener page is available
+        if resume_screener_page:
+            st.markdown("""
+            <div class="custom-dashboard-button" onclick="window.parent.postMessage({streamlit: {type: 'setSessionState', args: ['tab_override', '🧠 Resume Screener']}}, '*');">
+                <span>🧠</span>
+                <div>Resume Screener</div>
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button("🧠 Resume Screener", key="dashboard_screener_button"):
+                st.session_state.tab_override = '🧠 Resume Screener'
+                st.rerun()
+        else:
+            st.markdown("""
+            <div class="custom-dashboard-button" style="opacity: 0.6; cursor: not-allowed;">
+                <span>🚫</span>
+                <div>Resume Screener (Unavailable)</div>
+            </div>
+            """, unsafe_allow_html=True)
+            st.info("Resume Screener functionality is currently unavailable due to an import error. Please check the logs.")
+
 
     with col6:
         # The div for "custom-dashboard-button" will now have custom styling
@@ -398,14 +467,15 @@ elif tab == "⚙️ Admin Tools":
 # ======================
 
 elif tab == "🧠 Resume Screener":
-    try:
-        resume_screener_page()
-    except NameError:
-        st.info("`screener.py` not imported correctly. Please ensure it defines `resume_screener_page()`.")
-        log_system_event("ERROR", "PAGE_LOAD_FAILED", {"page": "Resume Screener", "error": "NameError: resume_screener_page not found"})
-    except Exception as e:
-        st.error(f"Error loading Resume Screener: {e}")
-        log_system_event("ERROR", "PAGE_LOAD_FAILED", {"page": "Resume Screener", "error": str(e), "traceback": traceback.format_exc()})
+    if resume_screener_page: # Only call if successfully imported
+        try:
+            resume_screener_page()
+        except Exception as e:
+            st.error(f"Error loading Resume Screener: {e}")
+            log_system_event("ERROR", "PAGE_LOAD_FAILED", {"page": "Resume Screener", "error": str(e), "traceback": traceback.format_exc()})
+    else:
+        st.error("Resume Screener functionality is unavailable. Please check the application logs for details on the import error.")
+        log_system_event("INFO", "RESUME_SCREENER_PAGE_UNAVAILABLE", {"reason": "Import failed"})
 
 
 elif tab == "📁 Manage JDs":
@@ -447,7 +517,7 @@ elif tab == "🔍 Search Resumes":
     # Changed from search_resumes_page to search_page
     if search_page:
         try:
-            search_page()
+            search_page() # Corrected: Was notes_page()
         except Exception as e:
             st.error(f"Error loading Search Resumes: {e}")
             log_system_event("ERROR", "PAGE_LOAD_FAILED", {"page": "Search Resumes", "error": str(e), "traceback": traceback.format_exc()})
@@ -458,7 +528,7 @@ elif tab == "🔍 Search Resumes":
 elif tab == "📝 Candidate Notes":
     # Changed from candidate_notes_page to notes_page
     if notes_page:
-        try:AC
+        try:
             notes_page()
         except Exception as e:
             st.error(f"Error loading Candidate Notes: {e}")
