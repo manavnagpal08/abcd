@@ -2,6 +2,7 @@ import streamlit as st
 import json
 import bcrypt
 import os
+from utils.logger import log_user_action, log_system_event # Import logging functions
 
 # File to store user credentials
 USER_DB_FILE = "users.json"
@@ -17,9 +18,11 @@ def load_users():
         # Ensure each user has a 'status' key for backward compatibility
         for username, data in users.items():
             if isinstance(data, str): # Old format: "username": "hashed_password"
-                users[username] = {"password": data, "status": "active"}
+                users[username] = {"password": data, "status": "active", "role": "recruiter"} # Default role
             elif "status" not in data:
                 data["status"] = "active"
+            if "role" not in data: # Ensure role is set for existing users
+                data["role"] = "admin" if username == ADMIN_USERNAME else "recruiter"
         return users
 
 def save_users(users):
@@ -53,12 +56,14 @@ def register_section():
                 users = load_users()
                 if new_username in users:
                     st.error("Username already exists. Please choose a different one.")
+                    log_system_event("WARNING", "USER_REGISTRATION_FAILED", {"username": new_username, "reason": "Username already exists"})
                 else:
-                    users[new_username] = {"password": hash_password(new_password), "status": "active"}
+                    users[new_username] = {"password": hash_password(new_password), "status": "active", "role": "recruiter"} # Default role for public registration
                     save_users(users)
                     st.success("✅ Registration successful! You can now switch to the 'Login' option.")
-                    # Manually set the session state to switch to Login option
+                    log_system_event("INFO", "USER_REGISTERED_PUBLIC", {"user_email": new_username, "role": "recruiter"})
                     st.session_state.active_login_tab_selection = "Login"
+                    st.rerun() # Rerun to update the UI and switch tab
 
 def admin_registration_section():
     """Admin-driven user creation form."""
@@ -75,10 +80,12 @@ def admin_registration_section():
                 users = load_users()
                 if new_username in users:
                     st.error(f"User '{new_username}' already exists.")
+                    log_user_action(st.session_state.get('username', 'unknown_admin'), "ADMIN_ADD_USER_FAILED", {"target_user": new_username, "reason": "User already exists"})
                 else:
-                    users[new_username] = {"password": hash_password(new_password), "status": "active"}
+                    users[new_username] = {"password": hash_password(new_password), "status": "active", "role": "recruiter"} # Default role for admin-added users
                     save_users(users)
                     st.success(f"✅ User '{new_username}' added successfully!")
+                    log_user_action(st.session_state.get('username', 'unknown_admin'), "ADMIN_ADD_USER_SUCCESS", {"target_user": new_username, "role": "recruiter"})
 
 def admin_password_reset_section():
     """Admin-driven password reset form."""
@@ -98,10 +105,12 @@ def admin_password_reset_section():
         if reset_button:
             if not new_password:
                 st.error("Please enter a new password.")
+                log_user_action(st.session_state.get('username', 'unknown_admin'), "ADMIN_PASSWORD_RESET_FAILED", {"target_user": selected_user, "reason": "No new password provided"})
             else:
                 users[selected_user]["password"] = hash_password(new_password)
                 save_users(users)
                 st.success(f"✅ Password for '{selected_user}' has been reset.")
+                log_user_action(st.session_state.get('username', 'unknown_admin'), "ADMIN_PASSWORD_RESET_SUCCESS", {"target_user": selected_user})
 
 def admin_disable_enable_user_section():
     """Admin-driven user disable/enable form."""
@@ -124,6 +133,7 @@ def admin_disable_enable_user_section():
             users[selected_user]["status"] = new_status
             save_users(users)
             st.success(f"✅ User '{selected_user}' status set to **{new_status.upper()}**.")
+            log_user_action(st.session_state.get('username', 'unknown_admin'), "ADMIN_USER_STATUS_TOGGLE_SUCCESS", {"target_user": selected_user, "new_status": new_status})
             st.rerun() # Rerun to update the displayed status immediately
 
 
@@ -133,6 +143,8 @@ def login_section():
         st.session_state.authenticated = False
     if "username" not in st.session_state:
         st.session_state.username = None
+    if "user_role" not in st.session_state: # Store user role
+        st.session_state.user_role = None
     
     # Initialize active_login_tab_selection if not present
     if "active_login_tab_selection" not in st.session_state:
@@ -166,17 +178,23 @@ def login_section():
                 users = load_users()
                 if username not in users:
                     st.error("❌ Invalid username or password. Please register if you don't have an account.")
+                    log_user_action(username, "LOGIN_FAILED", {"reason": "Username not found"})
                 else:
                     user_data = users[username]
                     if user_data["status"] == "disabled":
                         st.error("❌ Your account has been disabled. Please contact an administrator.")
+                        log_user_action(username, "LOGIN_FAILED", {"reason": "Account disabled", "status": "disabled"})
                     elif check_password(password, user_data["password"]):
                         st.session_state.authenticated = True
-                        st.session_state.username = username
+                        st.session_state.username = username # Store username
+                        st.session_state.user_email = username # Consistent with logger
+                        st.session_state.user_role = user_data.get("role", "recruiter") # Store user role
                         st.success("✅ Login successful!")
+                        log_user_action(username, "LOGIN_SUCCESS", {"role": st.session_state.user_role})
                         st.rerun()
                     else:
                         st.error("❌ Invalid username or password.")
+                        log_user_action(username, "LOGIN_FAILED", {"reason": "Incorrect password"})
     
     elif tab_selection == "Register": # This will be the initially selected option for new users
         register_section()
@@ -185,7 +203,12 @@ def login_section():
 
 # Helper function to check if the current user is an admin
 def is_current_user_admin():
-    return st.session_state.get("authenticated", False) and st.session_state.get("username") == ADMIN_USERNAME
+    # Check if authenticated and if the username matches the predefined admin username
+    # Also, ensure the role is explicitly 'admin' if you start using roles more broadly
+    return st.session_state.get("authenticated", False) and \
+           st.session_state.get("username") == ADMIN_USERNAME and \
+           st.session_state.get("user_role") == "admin"
+
 
 # Example of how to use it if running login.py directly for testing
 if __name__ == "__main__":
@@ -194,13 +217,14 @@ if __name__ == "__main__":
     
     # Ensure admin user exists for testing
     users = load_users()
-    if ADMIN_USERNAME not in users:
-        users[ADMIN_USERNAME] = {"password": hash_password("adminpass"), "status": "active"} # Set a default admin password for testing
+    if ADMIN_USERNAME not in users or users[ADMIN_USERNAME].get("role") != "admin":
+        users[ADMIN_USERNAME] = {"password": hash_password("adminpass"), "status": "active", "role": "admin"} # Set a default admin password for testing
         save_users(users)
-        st.info(f"Created default admin user: {ADMIN_USERNAME} with password 'adminpass'")
+        st.info(f"Created default admin user: {ADMIN_USERNAME} with password 'adminpass' and role 'admin'")
 
     if login_section():
         st.write(f"Welcome, {st.session_state.username}!")
+        st.write(f"Your role: {st.session_state.user_role}")
         st.write("You are logged in.")
         
         if is_current_user_admin():
@@ -219,10 +243,11 @@ if __name__ == "__main__":
                 if users_data:
                     display_users = []
                     for user, data in users_data.items():
-                        hashed_pass = data.get("password", data) if isinstance(data, dict) else data
-                        status = data.get("status", "N/A") if isinstance(data, dict) else "N/A"
-                        display_users.append([user, hashed_pass, status])
-                    st.dataframe(pd.DataFrame(display_users, columns=["Email/Username", "Hashed Password (DO NOT EXPOSE)", "Status"]), use_container_width=True)
+                        hashed_pass = data.get("password", "N/A")
+                        status = data.get("status", "N/A")
+                        role = data.get("role", "N/A")
+                        display_users.append([user, hashed_pass, status, role])
+                    st.dataframe(pd.DataFrame(display_users, columns=["Email/Username", "Hashed Password (DO NOT EXPOSE)", "Status", "Role"]), use_container_width=True)
                 else:
                     st.info("No users registered yet.")
             except ImportError:
@@ -230,11 +255,13 @@ if __name__ == "__main__":
             except Exception as e:
                 st.error(f"Error loading user data: {e}")
         else:
-            st.info("Log in as 'admin@screenerpro' to see admin features.")
+            st.info("Log in as 'admin@forscreenerpro' to see admin features.")
             
         if st.button("Logout"):
             st.session_state.authenticated = False
             st.session_state.pop('username', None)
+            st.session_state.pop('user_email', None) # Clear user_email too
+            st.session_state.pop('user_role', None) # Clear user_role too
             st.rerun()
     else:
         st.info("Please login or register to continue.")
