@@ -6,7 +6,7 @@ from utils.logger import log_user_action, log_system_event # Import logging func
 
 # File to store user credentials
 USER_DB_FILE = "users.json"
-ADMIN_USERNAME = "admin@forscreenerpro" # Define your admin username here
+ADMIN_USERNAME = "admin@forscreenerpro" # Define your primary admin username here
 
 def load_users():
     """Loads user data from the JSON file."""
@@ -22,6 +22,7 @@ def load_users():
             elif "status" not in data:
                 data["status"] = "active"
             if "role" not in data: # Ensure role is set for existing users
+                # If username is the primary ADMIN_USERNAME, set role to 'admin', otherwise 'recruiter'
                 data["role"] = "admin" if username == ADMIN_USERNAME else "recruiter"
         return users
 
@@ -71,6 +72,7 @@ def admin_registration_section():
     with st.form("admin_registration_form", clear_on_submit=True):
         new_username = st.text_input("New User's Username (Email)", key="new_username_admin_reg")
         new_password = st.text_input("New User's Password", type="password", key="new_password_admin_reg")
+        new_role = st.selectbox("Assign Role", ["recruiter", "admin"], key="new_user_role") # Allow admin to select role
         admin_register_button = st.form_submit_button("Add New User")
 
         if admin_register_button:
@@ -82,17 +84,17 @@ def admin_registration_section():
                     st.error(f"User '{new_username}' already exists.")
                     log_user_action(st.session_state.get('username', 'unknown_admin'), "ADMIN_ADD_USER_FAILED", {"target_user": new_username, "reason": "User already exists"})
                 else:
-                    users[new_username] = {"password": hash_password(new_password), "status": "active", "role": "recruiter"} # Default role for admin-added users
+                    users[new_username] = {"password": hash_password(new_password), "status": "active", "role": new_role} # Use selected role
                     save_users(users)
-                    st.success(f"✅ User '{new_username}' added successfully!")
-                    log_user_action(st.session_state.get('username', 'unknown_admin'), "ADMIN_ADD_USER_SUCCESS", {"target_user": new_username, "role": "recruiter"})
+                    st.success(f"✅ User '{new_username}' with role '{new_role}' added successfully!")
+                    log_user_action(st.session_state.get('username', 'unknown_admin'), "ADMIN_ADD_USER_SUCCESS", {"target_user": new_username, "role": new_role})
 
 def admin_password_reset_section():
     """Admin-driven password reset form."""
     st.subheader("🔑 Reset User Password (Admin Only)")
     users = load_users()
-    user_options = [user for user in users.keys() if user != ADMIN_USERNAME] # Cannot reset admin's own password here
-    
+    user_options = [user for user in users.keys() if user != ADMIN_USERNAME] # Cannot reset primary admin's own password here
+
     if not user_options:
         st.info("No other users to reset passwords for.")
         return
@@ -116,7 +118,7 @@ def admin_disable_enable_user_section():
     """Admin-driven user disable/enable form."""
     st.subheader("⛔ Toggle User Status (Admin Only)")
     users = load_users()
-    user_options = [user for user in users.keys() if user != ADMIN_USERNAME] # Cannot disable admin's own account here
+    user_options = [user for user in users.keys() if user != ADMIN_USERNAME] # Cannot disable primary admin's own account here
 
     if not user_options:
         st.info("No other users to manage status for.")
@@ -135,6 +137,22 @@ def admin_disable_enable_user_section():
             st.success(f"✅ User '{selected_user}' status set to **{new_status.upper()}**.")
             log_user_action(st.session_state.get('username', 'unknown_admin'), "ADMIN_USER_STATUS_TOGGLE_SUCCESS", {"target_user": selected_user, "new_status": new_status})
             st.rerun() # Rerun to update the displayed status immediately
+
+def add_admin_user(username, password):
+    """
+    Programmatically adds a new user with 'admin' role.
+    This function can be called for initial setup or by an existing admin.
+    """
+    users = load_users()
+    if username in users:
+        st.warning(f"Admin user '{username}' already exists. Skipping creation.")
+        return False
+    else:
+        users[username] = {"password": hash_password(password), "status": "active", "role": "admin"}
+        save_users(users)
+        st.success(f"Admin user '{username}' created successfully.")
+        log_system_event("INFO", "ADMIN_USER_CREATED_PROGRAMMATICALLY", {"user_email": username, "role": "admin"})
+        return True
 
 
 def login_section():
@@ -203,8 +221,10 @@ def login_section():
 
 # Helper function to check if the current user is an admin
 def is_current_user_admin():
-    # Check if authenticated and if the username matches the predefined admin username
+    # Check if authenticated and if the username matches the predefined primary admin username
     # Also, ensure the role is explicitly 'admin' if you start using roles more broadly
+    # This function checks if the logged-in user is THE primary admin defined by ADMIN_USERNAME.
+    # For checking if ANY logged-in user is an admin, check st.session_state.get("user_role") == "admin"
     return st.session_state.get("authenticated", False) and \
            st.session_state.get("username") == ADMIN_USERNAME and \
            st.session_state.get("user_role") == "admin"
@@ -215,19 +235,19 @@ if __name__ == "__main__":
     st.set_page_config(page_title="Login/Register", layout="centered")
     st.title("ScreenerPro Authentication (Test)")
     
-    # Ensure admin user exists for testing
-    users = load_users()
-    if ADMIN_USERNAME not in users or users[ADMIN_USERNAME].get("role") != "admin":
-        users[ADMIN_USERNAME] = {"password": hash_password("adminpass"), "status": "active", "role": "admin"} # Set a default admin password for testing
-        save_users(users)
-        st.info(f"Created default admin user: {ADMIN_USERNAME} with password 'adminpass' and role 'admin'")
+    # Ensure primary admin user exists for testing
+    add_admin_user(ADMIN_USERNAME, "adminpass") # Automatically create the default admin user
+    
+    # Add the new admin user as requested
+    add_admin_user("mn@gmail.com", "12345")
 
     if login_section():
         st.write(f"Welcome, {st.session_state.username}!")
         st.write(f"Your role: {st.session_state.user_role}")
         st.write("You are logged in.")
         
-        if is_current_user_admin():
+        # This condition should check if the current user's role is 'admin'
+        if st.session_state.get("user_role") == "admin":
             st.markdown("---")
             st.header("Admin Test Section (You are admin)")
             admin_registration_section()
@@ -255,10 +275,13 @@ if __name__ == "__main__":
             except Exception as e:
                 st.error(f"Error loading user data: {e}")
         else:
-            st.info("Log in as 'admin@forscreenerpro' to see admin features.")
+            st.info("Log in as an admin (e.g., 'admin@forscreenerpro' or 'mn@gmail.com') to see admin features.")
             
         if st.button("Logout"):
             st.session_state.authenticated = False
             st.session_state.pop('username', None)
             st.session_state.pop('user_email', None) # Clear user_email too
-            st.session_state.pop('user_role', None) # Cl
+            st.session_state.pop('user_role', None) # Clear user_role too
+            st.rerun()
+    else:
+        st.info("Please login or register to continue.")
