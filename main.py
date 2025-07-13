@@ -7,6 +7,9 @@ import os
 import json
 import numpy as np
 
+# Import authentication functions from the separate login.py module
+from login import login_section, is_current_user_admin # Import the actual login functions
+
 # Import the page functions from their respective files
 from email_page import email_candidates_page
 from analytics import analytics_dashboard_page
@@ -15,6 +18,9 @@ from utils.logger import log_user_action # Import the logging function
 
 # Resume Screener functionality has been removed due to persistent import errors.
 # The 'resume_screener_page' function and its import are no longer present.
+# We will explicitly set it to None here to avoid any NameError if it's referenced
+resume_screener_page = None 
+
 
 # For pages that were using exec(f.read()), we will now import functions directly.
 # You will need to define a main function in each of these files, e.g., manage_jds_page()
@@ -139,50 +145,11 @@ except FileNotFoundError:
 st.title("🧠 ScreenerPro – AI Hiring Assistant")
 
 # --- Auth ---
-# Placeholder for login_section and is_current_user_admin
-# You would typically define these functions in a separate auth.py or similar
-# For now, we'll define minimal versions to prevent NameError
-def login_section():
-    if 'authenticated' not in st.session_state:
-        st.session_state.authenticated = False
-    
-    if st.session_state.authenticated:
-        return True
-
-    st.sidebar.header("Login")
-    username = st.sidebar.text_input("Username", key="login_username")
-    password = st.sidebar.text_input("Password", type="password", key="login_password")
-
-    if st.sidebar.button("Login"):
-        # Simple hardcoded authentication for demonstration
-        if username == "admin" and password == "adminpass":
-            st.session_state.authenticated = True
-            st.session_state.user_email = "admin@example.com" # Mock admin email
-            st.session_state.is_admin = True # Set admin status
-            st.sidebar.success("Logged in as Admin!")
-            log_user_action("admin@example.com", "LOGIN_SUCCESS", {"role": "admin"})
-            st.rerun()
-        elif username == "user" and password == "userpass":
-            st.session_state.authenticated = True
-            st.session_state.user_email = "user@example.com" # Mock regular user email
-            st.session_state.is_admin = False # Set non-admin status
-            st.sidebar.success("Logged in as User!")
-            log_user_action("user@example.com", "LOGIN_SUCCESS", {"role": "user"})
-            st.rerun()
-        else:
-            st.sidebar.error("Invalid username or password.")
-            log_user_action(username, "LOGIN_FAILED", {"reason": "Invalid credentials"})
-            st.session_state.authenticated = False
-    return st.session_state.authenticated
-
-def is_current_user_admin():
-    return st.session_state.get('is_admin', False)
-
-
+# Call the login_section from the login.py module
 if not login_section():
     st.stop()
 
-# Determine if the logged-in user is an admin
+# Determine if the logged-in user is an admin using the function from login.py
 is_admin = is_current_user_admin()
 
 # --- Navigation Control ---
