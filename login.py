@@ -121,7 +121,7 @@ def admin_disable_enable_user_section():
     if not user_options:
         st.info("No other users to manage status for.")
         return
-        
+    
     with st.form("admin_toggle_user_status_form", clear_on_submit=False): # Keep values after submit for easier toggling
         selected_user = st.selectbox("Select User to Toggle Status", user_options, key="toggle_user_select")
         
@@ -261,7 +261,4 @@ if __name__ == "__main__":
             st.session_state.authenticated = False
             st.session_state.pop('username', None)
             st.session_state.pop('user_email', None) # Clear user_email too
-            st.session_state.pop('user_role', None) # Clear user_role too
-            st.rerun()
-    else:
-        st.info("Please login or register to continue.")
+            st.session_state.pop('user_role', None) # Cl
