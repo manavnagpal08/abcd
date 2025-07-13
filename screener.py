@@ -717,4 +717,4 @@ if __name__ == "__main__":
         st.session_state.user_email = "test_user@example.com"
         st.info("Running in standalone mode. Mocking user: test_user@example.com")
     
-    screener_page()
+    resume_screener_page()
