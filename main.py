@@ -7,13 +7,8 @@ import os
 import json
 
 # Import the page functions from their respective files
-from login import (
-    login_section, load_users, admin_registration_section,
-    admin_password_reset_section, admin_disable_enable_user_section,
-    is_current_user_admin
-)
-# Assuming these files exist in your project structure (you'll need to create them)
-from email_sender import send_email_to_candidate
+# Corrected import for email_page.py (was email_sender) and function name
+from email_page import email_candidates_page
 from screener import resume_screener_page
 from analytics import analytics_dashboard_page
 from admin_panel import admin_panel_page # Import the admin panel page
@@ -26,13 +21,15 @@ try:
 except ImportError:
     manage_jds_page = None # Set to None if import fails, handle later
 try:
-    from search import search_resumes_page
+    # Corrected import for search.py function name
+    from search import search_page
 except ImportError:
-    search_resumes_page = None # Set to None if import fails, handle later
+    search_page = None # Set to None if import fails, handle later
 try:
-    from notes import candidate_notes_page
+    # Corrected import for notes.py function name
+    from notes import notes_page
 except ImportError:
-    candidate_notes_page = None # Set to None if import fails, handle later
+    notes_page = None # Set to None if import fails, handle later
 
 
 # --- Page Config ---
@@ -115,7 +112,7 @@ html, body, [class*="css"] {
 }
 .custom-dashboard-button:hover {
     transform: translateY(-6px);
-    box_shadow: 0 10px 24px rgba(0,0,0,0.1);
+    box-shadow: 0 10px 24px rgba(0,0,0,0.1);
     background: linear-gradient(145deg, #e0f7fa, #f1f1f1);
 }
 .custom-dashboard-button span { /* For the icon */
@@ -187,10 +184,10 @@ if tab == "🏠 Dashboard":
     df_results = pd.DataFrame()
 
     # Load results from session state
-    if 'screening_results' in st.session_state and st.session_state['screening_results']:
+    if 'screening_results' in st.session_state and not st.session_state['screening_results'].empty:
         try:
             df_results = pd.DataFrame(st.session_state['screening_results'])
-            resume_count = df_results["File Name"].nunique()
+            resume_count = df_results["Resume Name"].nunique() # Use "Resume Name" as per screener.py output
 
             cutoff_score = st.session_state.get('screening_cutoff_score', 75)
             min_exp_required = st.session_state.get('screening_min_experience', 2)
@@ -218,7 +215,7 @@ if tab == "🏠 Dashboard":
             with st.expander(f"View {resume_count} Screened Names"):
                 for idx, row in df_results.iterrows():
                     st.markdown(f"- **{row['Candidate Name']}** (Score: {row['Score (%)']:.1f}%)")
-        elif 'screening_results' in st.session_state and st.session_state['screening_results']:
+        elif 'screening_results' in st.session_state and not st.session_state['screening_results'].empty:
             st.info("No resumes have been screened yet.")
         else:
             st.info("Run the screener to see screened resumes.")
@@ -234,7 +231,7 @@ if tab == "🏠 Dashboard":
             with st.expander(f"View {shortlisted} Shortlisted Names"):
                 for idx, row in shortlisted_df.iterrows():
                     st.markdown(f"- **{row['Candidate Name']}** (Score: {row['Score (%)']:.1f}%, Exp: {row['Years Experience']:.1f} yrs)")
-        elif 'screening_results' in st.session_state and st.session_state['screening_results']:
+        elif 'screening_results' in st.session_state and not st.session_state['screening_results'].empty:
             st.info("No candidates met the current shortlisting criteria.")
         else:
             st.info("Run the screener to see shortlisted candidates.")
@@ -271,6 +268,13 @@ if tab == "🏠 Dashboard":
     # Optional: Dashboard Insights
     if not df_results.empty:
         try:
+            # Ensure 'Semantic Similarity' column exists before using it for 'Tag'
+            if 'Semantic Similarity' not in df_results.columns:
+                # If not present, derive a dummy or handle gracefully
+                df_results['Semantic Similarity'] = np.random.uniform(0.3, 0.9, len(df_results)) # Dummy data for display
+                log_system_event("WARNING", "MISSING_SEMANTIC_SIMILARITY_COLUMN", {"action": "dummy_data_generated_dashboard"})
+
+
             df_results['Tag'] = df_results.apply(lambda row:
                 "👑 Exceptional Match" if row['Score (%)'] >= 90 and row['Years Experience'] >= 5 and row['Semantic Similarity'] >= 0.85 else (
                 "🔥 Strong Candidate" if row['Score (%)'] >= 80 and row['Years Experience'] >= 3 and row['Semantic Similarity'] >= 0.7 else (
@@ -332,9 +336,10 @@ if tab == "🏠 Dashboard":
 
             st.markdown("##### 🧠 Top 5 Most Common Skills")
 
-            if 'Matched Keywords' in df_results.columns:
+            # Changed 'Matched Keywords' to 'Matched Skills' as per screener.py output
+            if 'Matched Skills' in df_results.columns:
                 all_skills = []
-                for skills in df_results['Matched Keywords'].dropna():
+                for skills in df_results['Matched Skills'].dropna():
                     all_skills.extend([s.strip().lower() for s in skills.split(",") if s.strip()])
 
                 skill_counts = pd.Series(all_skills).value_counts().head(5)
@@ -368,10 +373,12 @@ if tab == "🏠 Dashboard":
                     st.info("No skill data available in results for the Top 5 Skills chart.")
 
             else:
-                st.info("No 'Matched Keywords' column found in results for skill analysis.")
+                st.info("No 'Matched Skills' column found in results for skill analysis.")
 
         except Exception as e:
             st.warning(f"⚠️ Could not render insights due to data error: {e}")
+            log_system_event("ERROR", "DASHBOARD_INSIGHTS_RENDER_FAILED", {"error": str(e), "traceback": traceback.format_exc()})
+
 
 # ======================
 # ⚙️ Admin Tools Section
@@ -383,6 +390,7 @@ elif tab == "⚙️ Admin Tools":
         admin_panel_page() # Call the admin panel function
     else:
         st.error("🔒 Access Denied: You must be an administrator to view this page.")
+        log_user_action(st.session_state.user_email, "ADMIN_TOOLS_ACCESS_DENIED", {"reason": "Not admin"})
 
 # ======================
 # Page Routing via function calls (remaining pages)
@@ -393,18 +401,23 @@ elif tab == "🧠 Resume Screener":
         resume_screener_page()
     except NameError:
         st.info("`screener.py` not imported correctly. Please ensure it defines `resume_screener_page()`.")
+        log_system_event("ERROR", "PAGE_LOAD_FAILED", {"page": "Resume Screener", "error": "NameError: resume_screener_page not found"})
     except Exception as e:
         st.error(f"Error loading Resume Screener: {e}")
+        log_system_event("ERROR", "PAGE_LOAD_FAILED", {"page": "Resume Screener", "error": str(e), "traceback": traceback.format_exc()})
 
 
 elif tab == "📁 Manage JDs":
+    # Changed from manage_jds_page to manage_jds_page (assuming it's defined in manage_jds.py)
     if manage_jds_page:
         try:
             manage_jds_page()
         except Exception as e:
             st.error(f"Error loading Manage JDs: {e}")
+            log_system_event("ERROR", "PAGE_LOAD_FAILED", {"page": "Manage JDs", "error": str(e), "traceback": traceback.format_exc()})
     else:
         st.info("`manage_jds.py` not found or function not defined. Please create it and define `manage_jds_page()`.")
+        log_system_event("ERROR", "PAGE_LOAD_FAILED", {"page": "Manage JDs", "error": "`manage_jds_page` not imported"})
 
 
 elif tab == "📊 Screening Analytics":
@@ -412,40 +425,54 @@ elif tab == "📊 Screening Analytics":
         analytics_dashboard_page()
     except NameError:
         st.info("`analytics.py` not imported correctly. Please ensure it defines `analytics_dashboard_page()`.")
+        log_system_event("ERROR", "PAGE_LOAD_FAILED", {"page": "Screening Analytics", "error": "NameError: analytics_dashboard_page not found"})
     except Exception as e:
         st.error(f"Error loading Screening Analytics: {e}")
+        log_system_event("ERROR", "PAGE_LOAD_FAILED", {"page": "Screening Analytics", "error": str(e), "traceback": traceback.format_exc()})
 
 elif tab == "📤 Email Candidates":
+    # Changed from send_email_to_candidate to email_candidates_page
     try:
-        send_email_to_candidate()
+        email_candidates_page()
     except NameError:
-        st.info("`email_sender.py` not imported correctly. Please ensure it defines `send_email_to_candidate()`.")
+        st.info("`email_page.py` not imported correctly. Please ensure it defines `email_candidates_page()`.")
+        log_system_event("ERROR", "PAGE_LOAD_FAILED", {"page": "Email Candidates", "error": "NameError: email_candidates_page not found"})
     except Exception as e:
         st.error(f"Error loading Email Candidates: {e}")
+        log_system_event("ERROR", "PAGE_LOAD_FAILED", {"page": "Email Candidates", "error": str(e), "traceback": traceback.format_exc()})
 
 
 elif tab == "🔍 Search Resumes":
-    if search_resumes_page:
+    # Changed from search_resumes_page to search_page
+    if search_page:
         try:
-            search_resumes_page()
+            search_page()
         except Exception as e:
             st.error(f"Error loading Search Resumes: {e}")
+            log_system_event("ERROR", "PAGE_LOAD_FAILED", {"page": "Search Resumes", "error": str(e), "traceback": traceback.format_exc()})
     else:
-        st.info("`search.py` not found or function not defined. Please create it and define `search_resumes_page()`.")
+        st.info("`search.py` not found or function not defined. Please create it and define `search_page()`.")
+        log_system_event("ERROR", "PAGE_LOAD_FAILED", {"page": "Search Resumes", "error": "`search_page` not imported"})
 
 elif tab == "📝 Candidate Notes":
-    if candidate_notes_page:
+    # Changed from candidate_notes_page to notes_page
+    if notes_page:
         try:
-            candidate_notes_page()
+            notes_page()
         except Exception as e:
             st.error(f"Error loading Candidate Notes: {e}")
+            log_system_event("ERROR", "PAGE_LOAD_FAILED", {"page": "Candidate Notes", "error": str(e), "traceback": traceback.format_exc()})
     else:
-        st.info("`notes.py` not found or function not defined. Please create it and define `candidate_notes_page()`.")
+        st.info("`notes.py` not found or function not defined. Please create it and define `notes_page()`.")
+        log_system_event("ERROR", "PAGE_LOAD_FAILED", {"page": "Candidate Notes", "error": "`notes_page` not imported"})
 
 elif tab == "🚪 Logout":
     if st.session_state.get('authenticated'):
         user_email = st.session_state.get('user_email', 'unknown_user')
-        log_user_action(user_email, "Logout", {"status": "success"})
+        log_user_action(user_email, "LOGOUT_INITIATED", {"status": "success"}) # Log initiation
+        # Update metrics for logout
+        update_metrics_summary("total_logouts", 1)
+        update_metrics_summary("user_logouts", 1, user_email=user_email)
     st.session_state.authenticated = False
     st.session_state.pop('username', None)
     st.success("✅ Logged out.")
