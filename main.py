@@ -14,7 +14,7 @@ from login import login_section, is_current_user_admin # Import the actual login
 from email_page import email_candidates_page
 from analytics import analytics_dashboard_page
 from admin_panel import admin_panel_page # Import the admin panel page
-from utils.logger import log_user_action # Import the logging function
+from utils.logger import log_user_action, update_metrics_summary # Import the logging and metrics functions
 
 # Resume Screener functionality has been removed due to persistent import errors.
 # The 'resume_screener_page' function and its import are no longer present.
