@@ -1,0 +1,34 @@
+**Job Title: Senior Software Engineer (Backend)**
+
+**Location:** Bengaluru, India
+
+**About Us:**
+We are a fast-growing tech company building innovative solutions for the fintech industry. We are looking for a highly motivated and experienced Senior Software Engineer to join our dynamic backend team.
+
+**Responsibilities:**
+* Design, develop, and maintain robust, scalable, and high-performance backend services and APIs.
+* Lead the implementation of new features and improvements using Python and modern frameworks (e.g., Flask, Django).
+* Work with cloud technologies, specifically AWS (Lambda, EC2, S3, RDS, DynamoDB), to build resilient and efficient systems.
+* Collaborate closely with product managers, frontend developers, and QA engineers in an Agile/Scrum environment.
+* Implement and maintain CI/CD pipelines to ensure continuous delivery and deployment.
+* Write comprehensive unit, integration, and end-to-end tests.
+* Participate in code reviews, mentor junior engineers, and contribute to architectural discussions.
+* Troubleshoot and debug production issues, ensuring high availability and performance of applications.
+
+**Required Skills & Qualifications:**
+* Bachelor's or Master's degree in Computer Science, Engineering, or a related field.
+* 5+ years of professional experience in backend software development.
+* Strong proficiency in **Python** and its ecosystem.
+* Extensive experience with **AWS** cloud services (Lambda, EC2, S3, RDS, DynamoDB).
+* Solid understanding of **RESTful API** design and microservices architecture.
+* Experience with **SQL** and NoSQL databases (e.g., PostgreSQL, MongoDB).
+* Familiarity with **Docker** and **Kubernetes**.
+* Experience with **CI/CD** tools (e.g., Jenkins, GitHub Actions).
+* Proficiency in **Git** for version control.
+* Strong understanding of **Agile** development methodologies (Scrum, Kanban).
+* Excellent problem-solving, analytical, and communication skills.
+
+**Preferred Qualifications:**
+* Experience with other programming languages like Java or Node.js.
+* Knowledge of data streaming platforms (e.g., Kafka).
+* Contributions to open-source projects.
