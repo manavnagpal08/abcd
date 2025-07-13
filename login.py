@@ -6,7 +6,7 @@ from utils.logger import log_user_action, log_system_event # Import logging func
 
 # File to store user credentials
 USER_DB_FILE = "users.json"
-ADMIN_USERNAME = "admin@forscreenerpro" # Define your primary admin username here
+ADMIN_USERNAME = "mn@gmail.com" # Define your primary admin username here
 
 def load_users():
     """Loads user data from the JSON file."""
@@ -221,12 +221,8 @@ def login_section():
 
 # Helper function to check if the current user is an admin
 def is_current_user_admin():
-    # Check if authenticated and if the username matches the predefined primary admin username
-    # Also, ensure the role is explicitly 'admin' if you start using roles more broadly
-    # This function checks if the logged-in user is THE primary admin defined by ADMIN_USERNAME.
-    # For checking if ANY logged-in user is an admin, check st.session_state.get("user_role") == "admin"
+    # This function now correctly checks if the logged-in user's role is 'admin'
     return st.session_state.get("authenticated", False) and \
-           st.session_state.get("username") == ADMIN_USERNAME and \
            st.session_state.get("user_role") == "admin"
 
 
