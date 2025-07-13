@@ -14,6 +14,7 @@ import nltk
 import collections
 from sklearn.metrics.pairwise import cosine_similarity
 import urllib.parse # For encoding mailto links
+import traceback # Added for detailed error logging
 
 # Import logging functions
 from utils.logger import log_user_action, update_metrics_summary, log_system_event
@@ -36,20 +37,22 @@ try:
     nltk.data.find('corpora/stopwords')
 except LookupError:
     nltk.download('stopwords')
-    log_system_event("INFO", "NLTK_DOWNLOAD", {"resource": "stopwords"})
-
+    log_system_event("INFO", "NLTK_DOWNLOAD", {"resource": "stopwords"}) # Log NLTK download
 
 # --- Load Embedding + ML Model ---
 @st.cache_resource
 def load_ml_model():
     try:
         model = SentenceTransformer("all-MiniLM-L6-v2")
+        # Ensure ml_screening_model.pkl exists before loading
+        if not os.path.exists("ml_screening_model.pkl"):
+            raise FileNotFoundError("ml_screening_model.pkl not found.")
         ml_model = joblib.load("ml_screening_model.pkl")
         log_system_event("INFO", "ML_MODEL_LOADED", {"model_name": "all-MiniLM-L6-v2", "ml_model_file": "ml_screening_model.pkl"})
         return model, ml_model
     except Exception as e:
         st.error(f"❌ Error loading models: {e}. Please ensure 'ml_screening_model.pkl' is in the same directory.")
-        log_system_event("ERROR", "ML_MODEL_LOAD_FAILED", {"error": str(e)})
+        log_system_event("ERROR", "ML_MODEL_LOAD_FAILED", {"error": str(e), "traceback": traceback.format_exc()})
         return None, None
 
 model, ml_model = load_ml_model()
@@ -145,6 +148,7 @@ STOP_WORDS = NLTK_STOP_WORDS.union(CUSTOM_STOP_WORDS)
 # Paste your comprehensive list of skills here.
 # These skills will be used to filter words for the word cloud and
 # to identify 'Matched Keywords' and 'Missing Skills'.
+# Keep this set empty if you want the system to use its default stop word filtering.
 MASTER_SKILLS = set([
         # Product & Project Management
     "Product Strategy", "Roadmap Development", "Agile Methodologies", "Scrum", "Kanban", "Jira", "Trello",
@@ -311,410 +315,757 @@ MASTER_SKILLS = set([
     "Esports League Databases"
 ])
 
-# --- Functions for Resume Processing ---
-def extract_text_from_pdf(pdf_file):
-    """Extracts text from a PDF file."""
+# --- Helpers ---
+def clean_text(text):
+    """Cleans text by removing newlines, extra spaces, and non-ASCII characters."""
+    text = re.sub(r'\n', ' ', text)
+    text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r'[^\x00-\x7F]+', ' ', text)
+    return text.strip().lower()
+
+def extract_relevant_keywords(text, filter_set):
+    """
+    Extracts relevant keywords from text, prioritizing multi-word skills from filter_set.
+    If filter_set is empty, it falls back to filtering out general STOP_WORDS.
+    """
+    cleaned_text = clean_text(text)
+    extracted_keywords = set()
+
+    if filter_set: # If a specific filter_set (like MASTER_SKILLS) is provided
+        # Sort skills by length descending to match longer phrases first
+        sorted_filter_skills = sorted(list(filter_set), key=len, reverse=True)
+        
+        temp_text = cleaned_text # Use a temporary text to remove matched phrases
+
+        for skill_phrase in sorted_filter_skills:
+            # Create a regex pattern to match the whole skill phrase
+            # \b ensures whole word match, re.escape handles special characters in skill names
+            pattern = r'\b' + re.escape(skill_phrase.lower()) + r'\b'
+            
+            # Find all occurrences of the skill phrase
+            matches = re.findall(pattern, temp_text)
+            if matches:
+                extracted_keywords.add(skill_phrase.lower()) # Add the original skill (lowercase)
+                # Replace the found skill with placeholders to avoid re-matching parts of it
+                temp_text = re.sub(pattern, " ", temp_text)
+        
+        # After extracting phrases, now extract individual words that are in the filter_set
+        # and haven't been part of a multi-word skill already extracted.
+        # This ensures single-word skills from MASTER_SKILLS are also captured.
+        individual_words_remaining = set(re.findall(r'\b\w+\b', temp_text))
+        for word in individual_words_remaining:
+            if word in filter_set:
+                extracted_keywords.add(word)
+
+    else: # Fallback: if no specific filter_set (MASTER_SKILLS is empty), use the default STOP_WORDS logic
+        all_words = set(re.findall(r'\b\w+\b', cleaned_text))
+        extracted_keywords = {word for word in all_words if word not in STOP_WORDS}
+
+    return extracted_keywords
+
+def extract_text_from_pdf(uploaded_file):
+    """Extracts text from an uploaded PDF file."""
     try:
-        with pdfplumber.open(pdf_file) as pdf:
-            text = ""
-            for page in pdf.pages:
-                text += page.extract_text() + "\n"
+        with pdfplumber.open(uploaded_file) as pdf:
+            text = ''.join(page.extract_text() or '' for page in pdf.pages)
+        log_system_event("INFO", "PDF_TEXT_EXTRACTED", {"filename": uploaded_file.name, "text_length": len(text)})
         return text
     except Exception as e:
-        log_system_event("ERROR", "PDF_EXTRACTION_FAILED", {"filename": pdf_file.name, "error": str(e)})
-        st.error(f"Error extracting text from {pdf_file.name}: {e}")
+        log_system_event("ERROR", "PDF_EXTRACTION_FAILED", {"filename": uploaded_file.name, "error": str(e), "traceback": traceback.format_exc()})
+        return f"[ERROR] {str(e)}"
+
+def extract_years_of_experience(text):
+    """Extracts years of experience from a given text by parsing date ranges or keywords."""
+    text = text.lower()
+    total_months = 0
+    job_date_ranges = re.findall(
+        r'(\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{4})\s*(?:to|–|-)\s*(present|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{4})',
+        text
+    )
+
+    for start, end in job_date_ranges:
+        try:
+            start_date = datetime.strptime(start.strip(), '%b %Y')
+        except ValueError:
+            try:
+                start_date = datetime.strptime(start.strip(), '%B %Y')
+            except ValueError:
+                continue
+
+        if end.strip() == 'present':
+            end_date = datetime.now()
+        else:
+            try:
+                end_date = datetime.strptime(end.strip(), '%b %Y')
+            except ValueError:
+                try:
+                    end_date = datetime.strptime(end.strip(), '%B %Y')
+                except ValueError:
+                    continue
+
+        delta_months = (end_date.year - start_date.year) * 12 + (end_date.month - start_date.month)
+        total_months += max(delta_months, 0)
+
+    if total_months == 0:
+        match = re.search(r'(\d+(?:\.\d+)?)\s*(\+)?\s*(year|yrs|years)\b', text)
+        if not match:
+            match = re.search(r'experience[^\d]{0,10}(\d+(?:\.\d+)?)', text)
+        if match:
+            try:
+                return float(match.group(1))
+            except ValueError:
+                log_system_event("WARNING", "EXPERIENCE_PARSE_ERROR", {"text_snippet": text[:50], "error": "Could not convert to float"})
+                return 0.0
+    return round(total_months / 12, 1)
+
+def extract_email(text):
+    """Extracts an email address from the given text."""
+    match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', text)
+    return match.group(0) if match else None
+
+def extract_name(text):
+    """
+    Attempts to extract a name from the first few lines of the resume text.
+    This is a heuristic and might not be perfect for all resume formats.
+    """
+    lines = text.strip().split('\n')
+    if not lines:
         return None
 
-def extract_contact_info(text):
-    """Extracts email and phone number from text."""
-    email_pattern = r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
-    phone_pattern = r"(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}" # More flexible phone pattern
-    
-    email = re.search(email_pattern, text)
-    phone = re.search(phone_pattern, text)
-    
-    return email.group(0) if email else "N/A", phone.group(0) if phone else "N/A"
+    potential_name_lines = []
+    for line in lines[:3]:
+        line = line.strip()
+        # Refined regex to be more robust for names, avoiding lines with too many non-alpha chars
+        if not re.search(r'[@\d\.\-]', line) and len(line.split()) <= 4 and (line.isupper() or (line and line[0].isupper() and all(word[0].isupper() or not word.isalpha() for word in line.split()))):
+            potential_name_lines.append(line)
 
-def preprocess_text(text):
-    """Cleans and tokenizes text, removing stop words."""
-    text = text.lower()
-    text = re.sub(r'[^a-zA-Z\s]', '', text) # Remove non-alphabetic characters
-    tokens = text.split()
-    tokens = [word for word in tokens if word not in STOP_WORDS]
-    return " ".join(tokens)
+    if potential_name_lines:
+        name = max(potential_name_lines, key=len)
+        name = re.sub(r'summary|education|experience|skills|projects|certifications', '', name, flags=re.IGNORECASE).strip()
+        if name:
+            return name.title()
+    return None
 
-def get_word_cloud_text(text):
-    """Generates text for word cloud by filtering for master skills."""
-    text = text.lower()
-    words = re.findall(r'\b\w+\b', text) # Extract words
-    filtered_words = [word for word in words if word in MASTER_SKILLS or any(s.lower() == word for s in MASTER_SKILLS)]
-    return " ".join(filtered_words)
+# --- Concise AI Suggestion Function (for table display) ---
+@st.cache_data(show_spinner="Generating concise AI Suggestion...")
+def generate_concise_ai_suggestion(candidate_name, score, years_exp, semantic_similarity):
+    """
+    Generates a concise AI suggestion based on rules, focusing on overall fit and key points.
+    """
+    overall_fit_description = ""
+    review_focus_text = ""
 
-def generate_word_cloud(text):
-    """Generates and displays a word cloud."""
-    if not text.strip():
-        st.info("No relevant keywords found for word cloud.")
+    if score >= 85 and years_exp >= st.session_state.get('screening_min_experience', 2) and semantic_similarity >= 0.75:
+        overall_fit_description = "High alignment with job requirements."
+        review_focus_text = "Focus on cultural fit and specific project contributions."
+    elif score >= st.session_state.get('screening_cutoff_score', 75) and years_exp >= st.session_state.get('screening_min_experience', 2) and semantic_similarity >= 0.4:
+        overall_fit_description = "Moderate fit; good potential."
+        review_focus_text = "Probe depth of experience and application of skills."
+    else:
+        overall_fit_description = "Limited alignment with core requirements."
+        review_focus_text = "Consider only if pipeline is limited; focus on foundational skills."
+
+    summary_text = f"**Overall Fit:** {overall_fit_description} **Review Focus:** {review_focus_text}"
+    return summary_text
+
+# --- Detailed HR Assessment Function (for top candidate display) ---
+@st.cache_data(show_spinner="Generating detailed HR Assessment...")
+def generate_detailed_hr_assessment(candidate_name, score, years_exp, semantic_similarity, jd_text, resume_text):
+    """
+    Generates a detailed, multi-paragraph HR assessment for a candidate.
+    """
+    assessment_parts = []
+    overall_assessment_title = ""
+    next_steps_focus = ""
+
+    # Retrieve cutoff values from session state, with defaults
+    cutoff_score = st.session_state.get('screening_cutoff_score', 75)
+    min_exp_required = st.session_state.get('screening_min_experience', 2)
+
+    # Tier 1: Exceptional Candidate
+    if score >= 90 and years_exp >= min_exp_required + 3 and semantic_similarity >= 0.85: # Higher bar for exceptional
+        overall_assessment_title = "Exceptional Candidate: Highly Aligned with Strategic Needs"
+        assessment_parts.append(f"**{candidate_name}** presents an **exceptional profile** with a high score of {score:.2f}% and {years_exp:.1f} years of experience. This demonstrates a profound alignment with the job description's core requirements, further evidenced by a strong semantic similarity of {semantic_similarity:.2f}.")
+        assessment_parts.append("This candidate possesses a robust skill set directly matching critical keywords in the JD, suggesting immediate productivity and minimal ramp-up time. Their extensive experience indicates a capacity for leadership and handling complex challenges. They are poised to make significant contributions from day one.")
+        next_steps_focus = "The next steps should focus on assessing cultural integration, exploring leadership potential, and delving into strategic contributions during the interview. This candidate appears to be a strong fit for a pivotal role within the organization."
+    # Tier 2: Strong Candidate
+    elif score >= 80 and years_exp >= min_exp_required and semantic_similarity >= 0.7:
+        overall_assessment_title = "Strong Candidate: Excellent Potential for Key Contributions"
+        assessment_parts.append(f"**{candidate_name}** is a **strong candidate** with a score of {score:.2f}% and {years_exp:.1f} years of experience. They show excellent alignment with the job description, supported by a solid semantic similarity of {semantic_similarity:.2f}.")
+        assessment_parts.append("Key strengths include a significant overlap in required skills and practical experience that directly addresses the job's demands. This individual is likely to integrate well and contribute effectively from an early stage, bringing valuable expertise to the team.")
+        next_steps_focus = "During the interview, explore specific project methodologies, problem-solving approaches, and long-term career aspirations to confirm alignment with team dynamics and growth opportunities within the company."
+    # Tier 3: Promising Candidate
+    elif score >= cutoff_score and years_exp >= min_exp_required - 1 and semantic_similarity >= 0.35: # Slightly lower exp for promising
+        overall_assessment_title = "Promising Candidate: Requires Focused Review on Specific Gaps"
+        assessment_parts.append(f"**{candidate_name}** is a **promising candidate** with a score of {score:.2f}% and {years_exp:.1f} years of experience. While demonstrating a foundational understanding (semantic similarity: {semantic_similarity:.2f}), there are areas that warrant deeper investigation to ensure a complete fit.")
+        
+        gaps = []
+        if score < cutoff_score + 5: # If score is just above cutoff
+            gaps.append("The overall score suggests some core skill areas may need development or further clarification.")
+        if years_exp < min_exp_required:
+            gaps.append(f"Experience ({years_exp:.1f} yrs) is on the lower side for the role; assess their ability to scale up quickly and take on more responsibility.")
+        if semantic_similarity < 0.5:
+            gaps.append("Semantic understanding of the JD's nuances might be limited; probe their theoretical knowledge versus practical application in real-world scenarios.")
+        
+        if gaps:
+            assessment_parts.append("Areas for further exploration include: " + " ".join(gaps))
+        
+        next_steps_focus = "The interview should focus on validating foundational skills, understanding their learning agility, and assessing their potential for growth within the role. Be prepared to discuss specific examples of how they've applied relevant skills and how they handle challenges."
+    # Tier 4: Limited Match
+    else:
+        overall_assessment_title = "Limited Match: Consider Only for Niche Needs or Pipeline Building"
+        assessment_parts.append(f"**{candidate_name}** shows a **limited match** with a score of {score:.2f}% and {years_exp:.1f} years of experience (semantic similarity: {semantic_similarity:.2f}). This profile indicates a significant deviation from the core requirements of the job description.")
+        assessment_parts.append("Key concerns include a low overlap in essential skills and potentially insufficient experience for the role's demands. While some transferable skills may exist, a substantial investment in training or a re-evaluation of role fit would likely be required for this candidate to succeed.")
+        next_steps_focus = "This candidate is generally not recommended for the current role unless there are specific, unforeseen niche requirements or a strategic need to broaden the candidate pool significantly. If proceeding, focus on understanding their fundamental capabilities and long-term career aspirations."
+
+    final_assessment = f"**Overall HR Assessment: {overall_assessment_title}**\n\n"
+    final_assessment += "\n".join(assessment_parts) + "\n\n"
+    final_assessment += f"**Recommended Interview Focus & Next Steps:** {next_steps_focus}"
+
+    return final_assessment
+
+
+def semantic_score(resume_text, jd_text, years_exp):
+    """
+    Calculates a semantic score using an ML model and provides additional details.
+    Falls back to smart_score if the ML model is not loaded or prediction fails.
+    Applies STOP_WORDS filtering for keyword analysis (internally, not for display).
+    """
+    jd_clean = clean_text(jd_text)
+    resume_clean = clean_text(resume_text)
+
+    score = 0.0
+    feedback = "Initial assessment." # This will be overwritten by the generate_concise_ai_suggestion function
+    semantic_similarity = 0.0
+
+    if ml_model is None or model is None:
+        log_system_event("WARNING", "ML_MODELS_NOT_LOADED_FOR_SEMANTIC_SCORE", {"reason": "Falling back to basic score"})
+        st.warning("ML models not loaded. Providing basic score and generic feedback.")
+        # Simplified fallback for score and feedback
+        # Use the new extraction logic for fallback as well
+        resume_words = extract_relevant_keywords(resume_clean, MASTER_SKILLS if MASTER_SKILLS else STOP_WORDS)
+        jd_words = extract_relevant_keywords(jd_clean, MASTER_SKILLS if MASTER_SKILLS else STOP_WORDS)
+        
+        overlap_count = len(resume_words.intersection(jd_words))
+        total_jd_words = len(jd_words)
+        
+        basic_score = (overlap_count / total_jd_words) * 70 if total_jd_words > 0 else 0
+        basic_score += min(years_exp * 5, 30) # Add up to 30 for experience
+        score = round(min(basic_score, 100), 2)
+        
+        feedback = "Due to missing ML models, a detailed AI suggestion cannot be provided. Basic score derived from keyword overlap. Manual review is highly recommended."
+        
+        return score, feedback, 0.0 # Return 0 for semantic similarity if ML not available
+
+
+    try:
+        jd_embed = model.encode(jd_clean)
+        resume_embed = model.encode(resume_clean)
+
+        semantic_similarity = cosine_similarity(jd_embed.reshape(1, -1), resume_embed.reshape(1, -1))[0][0]
+        semantic_similarity = float(np.clip(semantic_similarity, 0, 1))
+
+        # Internal calculation for model, not for display
+        # Use the new extraction logic for model features
+        resume_words_filtered = extract_relevant_keywords(resume_clean, MASTER_SKILLS if MASTER_SKILLS else STOP_WORDS)
+        jd_words_filtered = extract_relevant_keywords(jd_clean, MASTER_SKILLS if MASTER_SKILLS else STOP_WORDS)
+        keyword_overlap_count = len(resume_words_filtered.intersection(jd_words_filtered))
+        
+        years_exp_for_model = float(years_exp) if years_exp is not None else 0.0
+
+        features = np.concatenate([jd_embed, resume_embed, [years_exp_for_model], [keyword_overlap_count]])
+
+        predicted_score = ml_model.predict([features])[0]
+
+        if len(jd_words_filtered) > 0:
+            jd_coverage_percentage = (keyword_overlap_count / len(jd_words_filtered)) * 100
+        else:
+            jd_coverage_percentage = 0.0
+
+        blended_score = (predicted_score * 0.6) + \
+                        (jd_coverage_percentage * 0.1) + \
+                        (semantic_similarity * 100 * 0.3)
+
+        if semantic_similarity > 0.7 and years_exp >= 3:
+            blended_score += 5
+
+        score = float(np.clip(blended_score, 0, 100))
+        
+        # The AI suggestion text will be generated separately for display by generate_concise_ai_suggestion.
+        return round(score, 2), "AI suggestion will be generated...", round(semantic_similarity, 2) # Placeholder feedback
+
+
+    except Exception as e:
+        log_system_event("ERROR", "SEMANTIC_SCORE_CALC_FAILED", {"error": str(e), "traceback": traceback.format_exc()})
+        st.warning(f"Error during semantic scoring, falling back to basic: {e}")
+        # Simplified fallback for score and feedback if ML prediction fails
+        # Use the new extraction logic for fallback
+        resume_words = extract_relevant_keywords(resume_clean, MASTER_SKILLS if MASTER_SKILLS else STOP_WORDS)
+        jd_words = extract_relevant_keywords(jd_clean, MASTER_SKILLS if MASTER_SKILLS else STOP_WORDS)
+        
+        overlap_count = len(resume_words.intersection(jd_words))
+        total_jd_words = len(jd_words)
+        
+        basic_score = (overlap_count / total_jd_words) * 70 if total_jd_words > 0 else 0
+        basic_score += min(years_exp * 5, 30) # Add up to 30 for experience
+        score = round(min(basic_score, 100), 2)
+
+        feedback = "Due to an error in core AI model, a detailed AI suggestion cannot be provided. Basic score derived. Manual review is highly recommended."
+
+        return score, feedback, 0.0 # Return 0 for semantic similarity on fallback
+
+
+# --- Email Generation Function ---
+def create_mailto_link(recipient_email, candidate_name, job_title="Job Opportunity", sender_name="Recruiting Team"):
+    """
+    Generates a mailto: link with pre-filled subject and body for inviting a candidate.
+    """
+    subject = urllib.parse.quote(f"Invitation for Interview - {job_title} - {candidate_name}")
+    body = urllib.parse.quote(f"""Dear {candidate_name},
+
+We were very impressed with your profile and would like to invite you for an interview for the {job_title} position.
+
+Best regards,
+
+The {sender_name}""")
+    return f"mailto:{recipient_email}?subject={subject}&body={body}"
+
+# --- Function to encapsulate the Resume Screener logic ---
+def resume_screener_page():
+    # Ensure user is logged in
+    if 'user_email' not in st.session_state:
+        st.warning("Please log in to use the Resume Screener.")
+        log_user_action("unauthenticated", "RESUME_SCREENER_ACCESS_DENIED", {"reason": "Not logged in"})
         return
 
-    wordcloud = WordCloud(width=800, height=400, background_color='white',
-                          max_words=100, contour_width=3, contour_color='steelblue').generate(text)
-    
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.imshow(wordcloud, interpolation='bilinear')
-    ax.axis('off')
-    st.pyplot(fig)
-    plt.close(fig) # Close the plot to free memory
+    user_email = st.session_state.user_email
+    log_user_action(user_email, "RESUME_SCREENER_PAGE_ACCESSED")
 
-def calculate_cosine_similarity(text1, text2):
-    """Calculates cosine similarity between two texts using sentence embeddings."""
-    if model is None:
-        st.warning("Embedding model not loaded. Cannot calculate similarity.")
-        return 0.0
-    
-    embeddings = model.encode([text1, text2])
-    similarity = cosine_similarity([embeddings[0]], [embeddings[1]])[0][0]
-    return similarity
+    st.markdown('<div class="screener-container">', unsafe_allow_html=True)
+    st.markdown("## 🧠 AI Resume Screener")
+    st.caption("Upload resumes, provide a Job Description, and let the AI analyze the match.")
 
-def predict_screening_status(resume_text):
-    """Predicts screening status using the loaded ML model."""
-    if ml_model is None or model is None:
-        return "Model Not Loaded"
+    # --- Job Description Input ---
+    st.markdown("### 📝 Job Description")
+    # Ensure 'data' directory exists for JD files
+    jd_folder = "data"
+    os.makedirs(jd_folder, exist_ok=True)
+    jd_files = [f for f in os.listdir(jd_folder) if f.endswith(".txt")]
     
-    try:
-        resume_embedding = model.encode([resume_text])
-        prediction = ml_model.predict(resume_embedding)
+    jd_options = ["Paste Manually"] + sorted(jd_files)
+    jd_source = st.radio("Choose JD Source:", jd_options, key="jd_source_radio")
+
+    job_description_text = ""
+    if jd_source == "Paste Manually":
+        job_description_text = st.text_area("Paste Job Description here:", height=200, key="manual_jd")
+        if job_description_text:
+            log_user_action(user_email, "JD_ENTERED_MANUALLY", {"jd_length": len(job_description_text)})
+    else:
+        jd_file_path = os.path.join(jd_folder, jd_source)
+        try:
+            with open(jd_file_path, "r", encoding="utf-8") as f:
+                job_description_text = f.read()
+            st.text_area(f"Content of {jd_source}:", value=job_description_text, height=200, disabled=True, key="loaded_jd")
+            log_user_action(user_email, "JD_LOADED_FROM_FILE", {"file_name": jd_source, "jd_length": len(job_description_text)})
+        except Exception as e:
+            st.error(f"Error loading JD from file: {e}. Please ensure the file is valid and accessible.")
+            log_system_event("ERROR", "JD_FILE_LOAD_FAILED_SCREENER", {"user_email": user_email, "file": jd_source, "error": str(e), "traceback": traceback.format_exc()})
+            job_description_text = ""
+
+    if not job_description_text:
+        st.warning("Please provide or select a Job Description to proceed.")
+        st.stop()
+
+    # --- Skills and Experience Input ---
+    st.markdown("### 🎯 Screening Criteria")
+    col1, col2 = st.columns(2)
+    with col1:
+        required_skills_input = st.text_area(
+            "Required Skills (comma-separated, e.g., Python, SQL, AWS)",
+            "Python, SQL, Data Analysis, Machine Learning",
+            key="required_skills"
+        )
+    with col2:
+        min_experience = st.number_input(
+            "Minimum Years of Experience Required",
+            min_value=0, value=2, step=1, key="min_experience"
+        )
+        # Store for analytics/email page
+        st.session_state['screening_min_experience'] = min_experience
         
-        # Assuming the model outputs 0 for Reject, 1 for Interview, 2 for Shortlisted
-        # Adjust these mappings based on your actual model's output
-        status_map = {0: "Rejected", 1: "Interview", 2: "Shortlisted"}
-        predicted_status = status_map.get(prediction[0], "Unknown")
-        return predicted_status
-    except Exception as e:
-        log_system_event("ERROR", "ML_PREDICTION_FAILED", {"error": str(e), "resume_snippet": resume_text[:200]})
-        return f"Prediction Error: {e}"
+        # Add a cutoff score input for screening
+        cutoff_score = st.slider(
+            "Minimum Similarity Score (%) for Shortlisting",
+            min_value=0, max_value=100, value=75, step=1, key="cutoff_score_slider"
+        )
+        st.session_state['screening_cutoff_score'] = cutoff_score # Store for email page
 
-def identify_matched_and_missing_skills(resume_text, job_description_text):
-    """Identifies skills from MASTER_SKILLS present in resume and missing from JD."""
-    resume_words = set(preprocess_text(resume_text).lower().split())
-    jd_words = set(preprocess_text(job_description_text).lower().split())
 
-    matched_skills = [skill for skill in MASTER_SKILLS if skill.lower() in resume_words and skill.lower() in jd_words]
-    missing_skills = [skill for skill in MASTER_SKILLS if skill.lower() not in resume_words and skill.lower() in jd_words]
-    
-    # Also find matched keywords in general (not just MASTER_SKILLS)
-    all_matched_keywords = list(resume_words.intersection(jd_words).difference(STOP_WORDS))
+    required_skills = [skill.strip().lower() for skill in required_skills_input.split(',') if skill.strip()]
+    if not required_skills:
+        st.warning("Please enter at least one required skill.")
+        log_user_action(user_email, "SCREENING_CRITERIA_MISSING_SKILLS", {"reason": "No required skills entered"})
+        st.stop()
 
-    return matched_skills, missing_skills, all_matched_keywords
+    # --- Resume Upload ---
+    st.markdown("### 📄 Upload Resumes")
+    uploaded_resumes = st.file_uploader(
+        "Upload Resume PDFs (multiple allowed)",
+        type="pdf",
+        accept_multiple_files=True,
+        key="resume_uploads"
+    )
 
-# Generative AI (Gemini Pro) Function - COMMENTED OUT AS PER USER REQUEST
-# def generate_interview_questions(resume_text, job_description, count=5):
-#     """Generates interview questions based on resume and job description using Gemini."""
-#     if not genai.configure(api_key=st.secrets["GOOGLE_API_KEY"]): # Re-check API key access
-#         st.error("Google API Key not configured. Cannot generate interview questions.")
-#         return []
+    if uploaded_resumes and st.button("🚀 Start Screening"):
+        st.session_state['screening_results'] = pd.DataFrame() # Clear previous results
+        results = []
+        jd_text_lower = job_description_text.lower()
+        # jd_words_set = set(re.findall(r'\b\w+\b', jd_text_lower)) # Words from JD - not directly used in core logic but good for analysis
 
-#     try:
-#         model_genai = genai.GenerativeModel('gemini-pro')
-#         prompt = f"""
-#         Based on the following resume and job description, generate {count} technical interview questions.
-#         Focus on key skills and experiences mentioned in the resume that are relevant to the job description.
-#         Prioritize questions that would assess deep understanding and problem-solving abilities.
-#         Resume:\n{resume_text}\n\n
-#         Job Description:\n{job_description}\n\n
-#         Format the output as a numbered list of questions.
-#         """
-#         response = model_genai.generate_content(prompt)
-#         questions = response.text.strip().split('\n')
-#         return [q for q in questions if q.strip()] # Filter out empty lines
-#     except Exception as e:
-#         st.error(f"Error generating interview questions: {e}")
-#         log_system_event("ERROR", "GEMINI_QUESTION_GENERATION_FAILED", {"error": str(e)})
-#         return ["Could not generate questions. Please check API key and try again."]
+        progress_text = "Operation in progress. Please wait."
+        my_bar = st.progress(0, text=progress_text)
+        
+        log_user_action(user_email, "SCREENING_STARTED", {
+            "num_resumes": len(uploaded_resumes),
+            "jd_source": jd_source,
+            "min_experience_req": min_experience,
+            "required_skills_count": len(required_skills),
+            "shortlisting_cutoff_score": cutoff_score
+        })
+        update_metrics_summary("total_screenings_run", 1)
+        update_metrics_summary("user_screenings_run", 1, user_email=user_email)
 
-def process_resumes(uploaded_files, job_description, required_score_threshold=0.5):
-    """Processes uploaded resumes against a job description."""
-    if model is None or ml_model is None:
-        st.error("Model not loaded. Please check the model files and try again.")
-        return pd.DataFrame()
+        for i, resume_file in enumerate(uploaded_resumes):
+            status_text.text(f"Processing {resume_file.name} ({i+1}/{len(uploaded_resumes)})...")
+            my_bar.progress((i + 1) / len(uploaded_resumes))
 
-    job_description_processed = preprocess_text(job_description)
-    job_description_embedding = model.encode([job_description_processed])
+            # Read PDF in-memory as BytesIO
+            pdf_bytes = BytesIO(resume_file.read())
+            resume_text = extract_text_from_pdf(pdf_bytes)
 
-    results = []
-    total_files = len(uploaded_files)
-    processed_count = 0
+            if resume_text.startswith("[ERROR]"): # Check for error string from extract_text_from_pdf
+                st.error(f"Failed to process {resume_file.name}: {resume_text.replace('[ERROR] ', '')}. Skipping...")
+                log_system_event("WARNING", "RESUME_SKIPPED_DUE_TO_PARSE_ERROR", {"user_email": user_email, "resume_name": resume_file.name, "error_detail": resume_text})
+                continue
 
-    log_user_action(st.session_state.user_email, "RESUME_SCREENING_STARTED", {"job_description_length": len(job_description)})
-
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-
-    for uploaded_file in uploaded_files:
-        status_text.text(f"Processing {uploaded_file.name}...")
-        resume_text = extract_text_from_pdf(uploaded_file)
-        if resume_text:
-            name_match = re.search(r"^[A-Z][a-zA-Z.\s]+", resume_text.split('\n')[0])
-            candidate_name = name_match.group(0).strip() if name_match else uploaded_file.name.replace(".pdf", "")
+            # Basic Information Extraction
+            # Improved candidate name extraction: look for common patterns at the beginning
+            candidate_name_match = re.match(r'^(?:Mr\.|Ms\.|Dr\.)?\s*([A-Za-z\s.-]{2,})', resume_text.strip())
+            candidate_name = candidate_name_match.group(1).strip() if candidate_name_match else resume_file.name.replace(".pdf", "").replace("_", " ").title()
             
-            email, phone = extract_contact_info(resume_text)
+            email = extract_email(resume_text)
+            phone = extract_contact_info(resume_text)[1] # Get phone from tuple
+            years_experience = extract_years_of_experience(resume_text)
             
-            resume_processed = preprocess_text(resume_text)
-            resume_embedding = model.encode([resume_processed])
+            # Skill Matching
+            resume_text_lower = resume_text.lower()
+            matched_skills = [skill for skill in required_skills if skill in resume_text_lower]
+            missing_skills = [skill for skill in required_skills if skill not in resume_text_lower]
+
+            # Similarity Score (Cosine Similarity with TF-IDF)
+            documents = [jd_text_lower, resume_text_lower]
+            try:
+                # Add 'stop_words' to TfidfVectorizer for better relevance
+                vectorizer = TfidfVectorizer(stop_words='english')
+                tfidf_matrix = vectorizer.fit_transform(documents)
+                cosine_sim = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
+                similarity_score_percent = round(cosine_sim * 100, 2)
+            except Exception as e:
+                similarity_score_percent = 0.0 # Default to 0 if vectorization fails
+                log_system_event("ERROR", "TFIDF_COSINE_SIM_FAILED", {"user_email": user_email, "resume_name": resume_file.name, "error": str(e), "traceback": traceback.format_exc()})
+
+
+            # Determine Predicted Status based on criteria
+            predicted_status = "Rejected"
+            if similarity_score_percent >= cutoff_score and years_experience >= min_experience:
+                predicted_status = "Shortlisted"
+            elif years_experience < min_experience:
+                predicted_status = "Rejected (Experience)"
+            elif similarity_score_percent < cutoff_score:
+                predicted_status = "Rejected (Score)"
             
-            similarity = calculate_cosine_similarity(resume_processed, job_description_processed)
-            
-            # Predict screening status using the ML model
-            predicted_status = predict_screening_status(resume_embedding.tolist()[0]) # Pass the raw embedding list
+            # Refine prediction based on major skill gaps
+            if predicted_status == "Shortlisted" and len(required_skills) > 0 and len(missing_skills) > len(required_skills) / 2: # If too many skills are missing
+                 predicted_status = "Rejected (Major Skill Gap)"
 
-            # Generate word cloud data
-            word_cloud_text_for_resume = get_word_cloud_text(resume_text)
 
-            # Identify matched and missing skills
-            matched_skills, missing_skills, all_matched_keywords = identify_matched_and_missing_skills(resume_text, job_description)
+            # Generate AI Suggestion based on the *final* predicted status and other factors
+            ai_suggestion = generate_concise_ai_suggestion(
+                candidate_name=candidate_name,
+                score=similarity_score_percent,
+                years_exp=years_experience,
+                semantic_similarity=0.0 # Placeholder, as semantic_score is called later
+            )
+            # Re-call semantic_score to get the actual semantic_similarity for the result
+            actual_score, _, semantic_similarity_val = semantic_score(resume_text, jd_text, years_experience)
+            # Update AI suggestion with actual semantic similarity if needed
+            ai_suggestion = generate_concise_ai_suggestion(
+                candidate_name=candidate_name,
+                score=actual_score,
+                years_exp=years_experience,
+                semantic_similarity=semantic_similarity_val
+            )
 
-            # Determine match level
-            match_level = "High" if similarity >= required_score_threshold else "Low"
+
+            # Match Level based on score
+            match_level = ""
+            if similarity_score_percent >= 80:
+                match_level = "High"
+            elif similarity_score_percent >= 60:
+                match_level = "Medium"
+            else:
+                match_level = "Low"
 
             results.append({
-                "Resume Name": uploaded_file.name,
+                "Resume Name": resume_file.name,
                 "Candidate Name": candidate_name,
-                "Email": email,
-                "Phone": phone,
-                "Similarity Score": f"{similarity:.2f}",
-                "Predicted Status": predicted_status,
-                "Match Level": match_level,
+                "Email": email or "N/A",
+                "Phone": phone or "N/A",
+                "Years Experience": years_experience,
+                "Score (%)": similarity_score_percent, # Renamed for clarity in email_page.py
                 "Matched Skills": ", ".join(matched_skills) if matched_skills else "None",
                 "Missing Skills": ", ".join(missing_skills) if missing_skills else "None",
-                "Keywords in JD & Resume": ", ".join(all_matched_keywords) if all_matched_keywords else "None",
-                "Resume Text": resume_text, # Keep original text for display/download
-                "WordCloudText": word_cloud_text_for_for_resume # Text for generating word cloud later
+                "Predicted Status": predicted_status,
+                "Match Level": match_level,
+                "AI Suggestion": ai_suggestion, # This is the concise one for the table
+                "Detailed HR Assessment": generate_detailed_hr_assessment(candidate_name, similarity_score_percent, years_experience, semantic_similarity_val, jd_text, resume_text), # Store the detailed one for top candidate
+                "Semantic Similarity": semantic_similarity_val,
+                "Resume Raw Text": resume_text, # Store full text for potential future use (e.g., detailed view)
+                "WordCloudText": clean_text_for_wordcloud(resume_text) # For analytics word cloud
             })
-            log_user_action(st.session_state.user_email, "RESUME_SCREENED", {
-                "resume_name": uploaded_file.name,
-                "similarity_score": float(f"{similarity:.2f}"),
+            log_user_action(user_email, "RESUME_PROCESSED", {
+                "resume_name": resume_file.name,
+                "score": similarity_score_percent,
                 "predicted_status": predicted_status,
-                "match_level": match_level,
-                "jd_id": st.session_state.get('selected_jd_id', 'N/A') # Assuming JD ID is stored
+                "years_exp": years_experience
             })
-            update_metrics_summary(st.session_state.user_email, "total_resumes_screened", 1)
-            update_metrics_summary(st.session_state.user_email, "user_resumes_screened", 1)
+            update_metrics_summary("total_resumes_screened", 1)
+            update_metrics_summary("user_resumes_screened", 1, user_email=user_email)
+        
+        my_bar.empty()
+        status_text.empty()
+        st.success("Screening complete! Check results below.")
+        log_user_action(user_email, "SCREENING_COMPLETE_SUCCESS", {"num_processed": len(results), "num_failed_to_parse": len(uploaded_resumes) - len(results)})
+
+        df_results = pd.DataFrame(results)
+        st.session_state['screening_results'] = df_results # Store results in session state for other pages
+
+        # Save results to CSV for analytics.py to use (re-added as analytics.py was updated to use it)
+        # Ensure 'data' directory exists for results.csv
+        if not os.path.exists("data"):
+            os.makedirs("data")
+        df_results.to_csv(os.path.join("data", "results.csv"), index=False)
+        log_system_event("INFO", "SCREENING_RESULTS_SAVED_TO_CSV", {"rows": len(df_results)})
+
+
+        # --- Overall Candidate Comparison Chart ---
+        st.markdown("## 📊 Candidate Score Comparison")
+        st.caption("Visual overview of how each candidate ranks against the job requirements.")
+        if not df_results.empty:
+            try:
+                fig, ax = plt.subplots(figsize=(12, 7))
+                # Define colors: Green for top, Yellow for moderate, Red for low
+                colors = ['#4CAF50' if s >= cutoff_score else '#FFC107' if s >= (cutoff_score * 0.75) else '#F44346' for s in df_results['Score (%)']]
+                bars = ax.bar(df_results['Candidate Name'], df_results['Score (%)'], color=colors)
+                ax.set_xlabel("Candidate", fontsize=14)
+                ax.set_ylabel("Score (%)", fontsize=14)
+                ax.set_title("Resume Screening Scores Across Candidates", fontsize=16, fontweight='bold')
+                ax.set_ylim(0, 100)
+                plt.xticks(rotation=60, ha='right', fontsize=10)
+                plt.yticks(fontsize=10)
+                for bar in bars:
+                    yval = bar.get_height()
+                    ax.text(bar.get_x() + bar.get_width()/2, yval + 1, f"{yval:.1f}", ha='center', va='bottom', fontsize=9)
+                plt.tight_layout()
+                st.pyplot(fig)
+                plt.close(fig) # Close the figure to free up memory
+            except Exception as e:
+                st.error("Error generating Candidate Score Comparison chart.")
+                log_system_event("ERROR", "PLOT_GENERATION_FAILED", {"chart": "Candidate Score Comparison", "error": str(e), "traceback": traceback.format_exc()})
         else:
-            log_system_event("WARNING", "RESUME_SKIPPED", {"filename": uploaded_file.name, "reason": "Text extraction failed"})
-            st.warning(f"Skipping {uploaded_file.name} due to text extraction error.")
+            st.info("Upload resumes to see a comparison chart.")
 
-        processed_count += 1
-        progress_bar.progress(processed_count / total_files)
-
-    status_text.text("Resume screening complete!")
-    progress_bar.empty() # Clear the progress bar after completion
-    return pd.DataFrame(results)
-
-def screener_page():
-    st.markdown('<div class="dashboard-header">🚀 Resume Screener</div>', unsafe_allow_html=True)
-
-    if model is None or ml_model is None:
-        st.warning("Application models are not loaded. Please ensure `ml_screening_model.pkl` is available.")
-        return
-
-    # Initialize session state for storing job description and results
-    if "job_description" not in st.session_state:
-        st.session_state.job_description = ""
-    if "screening_results" not in st.session_state:
-        st.session_state.screening_results = pd.DataFrame()
-    if "display_detail_for_resume" not in st.session_state:
-        st.session_state.display_detail_for_resume = None
-
-    # Job Description Input
-    st.subheader("1. Enter Job Description")
-    job_description = st.text_area(
-        "Paste the Job Description here:",
-        value=st.session_state.job_description,
-        height=200,
-        key="job_description_input"
-    )
-    # Update session state whenever the text area changes
-    st.session_state.job_description = job_description
-
-    st.subheader("2. Upload Resumes (PDFs only)")
-    uploaded_files = st.file_uploader(
-        "Choose PDF resume files", 
-        type="pdf", 
-        accept_multiple_files=True, 
-        key="resume_uploader"
-    )
-    
-    if uploaded_files:
-        log_user_action(st.session_state.user_email, "RESUMES_UPLOADED", {"count": len(uploaded_files)})
-        st.info(f"{len(uploaded_files)} files uploaded. Click 'Screen Resumes' to start.")
-
-    # Screening Settings
-    st.subheader("3. Screening Settings")
-    required_score_threshold = st.slider(
-        "Minimum Similarity Score for 'High Match':",
-        min_value=0.0,
-        max_value=1.0,
-        value=0.5,
-        step=0.01,
-        help="Resumes with a similarity score equal to or above this threshold will be flagged as 'High Match'."
-    )
-
-    # Screen Button
-    if st.button("🚀 Screen Resumes", type="primary", use_container_width=True, key="screen_button"):
-        if not job_description:
-            st.error("Please enter a job description.")
-            log_user_action(st.session_state.user_email, "SCREENING_INITIATED_FAILED", {"reason": "No job description"})
-        elif not uploaded_files:
-            st.error("Please upload at least one resume.")
-            log_user_action(st.session_state.user_email, "SCREENING_INITIATED_FAILED", {"reason": "No resumes uploaded"})
-        else:
-            log_user_action(st.session_state.user_email, "SCREENING_INITIATED_SUCCESS", {"num_resumes": len(uploaded_files), "threshold": required_score_threshold})
-            with st.spinner("Screening resumes... This may take a moment."):
-                df_results = process_resumes(uploaded_files, job_description, required_score_threshold)
-                st.session_state.screening_results = df_results
-                st.success("Screening complete! See results below.")
-                st.session_state.display_detail_for_resume = None # Reset detail view
-
-    # Display Results
-    if not st.session_state.screening_results.empty:
         st.markdown("---")
-        st.subheader("4. Screening Results")
-        
-        df_display = st.session_state.screening_results.copy()
-        # Create a "View Details" button column
-        df_display['Action'] = [f"View Details_{i}" for i in range(len(df_display))]
-        
-        # Make the dataframe interactive for button clicks
-        # We need to handle button clicks outside the dataframe loop to avoid reruns
-        
-        # Sort results for better visualization
-        sort_column = st.selectbox("Sort results by:", options=['Similarity Score', 'Predicted Status', 'Candidate Name'], index=0)
-        sort_order = st.radio("Sort order:", options=['Descending', 'Ascending'], index=0, horizontal=True)
 
-        if sort_column == 'Similarity Score':
-            df_display['Similarity Score'] = pd.to_numeric(df_display['Similarity Score'])
-            st.session_state.screening_results = st.session_state.screening_results.sort_values(
-                by='Similarity Score', 
-                ascending=(sort_order == 'Ascending')
-            ).reset_index(drop=True)
-            df_display = df_display.sort_values(by='Similarity Score', ascending=(sort_order == 'Ascending')).reset_index(drop=True)
+        # --- TOP CANDIDATE AI RECOMMENDATION (Game Changer Feature) ---
+        st.markdown("## 👑 Top Candidate AI Assessment")
+        st.caption("A concise, AI-powered assessment for the most suitable candidate.")
+        
+        if not df_results.empty:
+            top_candidate = df_results.iloc[0] # Get the top candidate (already sorted by score)
+            st.markdown(f"### **{top_candidate['Candidate Name']}**")
+            st.markdown(f"**Score:** {top_candidate['Score (%)']:.2f}% | **Experience:** {top_candidate['Years Experience']:.1f} years | **Semantic Similarity:** {top_candidate['Semantic Similarity']:.2f}")
+            st.markdown(f"**AI Assessment:**")
+            st.markdown(top_candidate['Detailed HR Assessment']) # Display the detailed HR assessment here
+            
+            # Action button for the top candidate
+            if top_candidate['Email'] != "N/A":
+                mailto_link_top = create_mailto_link(
+                    recipient_email=top_candidate['Email'],
+                    candidate_name=top_candidate['Candidate Name'],
+                    job_title=jd_option if jd_option != "Paste Manually" else "Job Opportunity" # Use selected JD name
+                )
+                st.markdown(f'<a href="{mailto_link_top}" target="_blank"><button style="background-color:#00cec9;color:white;border:none;padding:10px 20px;text-align:center;text-decoration:none;display:inline-block;font-size:16px;margin:4px 2px;cursor:pointer;border-radius:8px;">📧 Invite Top Candidate for Interview</button></a>', unsafe_allow_html=True)
+                log_user_action(user_email, "TOP_CANDIDATE_EMAIL_LINK_GENERATED", {"candidate_name": top_candidate['Candidate Name']})
+            else:
+                st.info(f"Email address not found for {top_candidate['Candidate Name']}. Cannot send automated invitation.")
+            
+            st.markdown("---")
+            st.info("For detailed analytics, matched keywords, and missing skills for ALL candidates, please navigate to the **Analytics Dashboard**.")
+
         else:
-            st.session_state.screening_results = st.session_state.screening_results.sort_values(
-                by=sort_column, 
-                ascending=(sort_order == 'Ascending')
-            ).reset_index(drop=True)
-            df_display = df_display.sort_values(by=sort_column, ascending=(sort_order == 'Ascending')).reset_index(drop=True)
+            st.info("No candidates processed yet to determine the top candidate.")
 
+
+        # === AI Recommendation for Shortlisted Candidates (Streamlined) ===
+        # This section now focuses on a quick summary for *all* shortlisted,
+        # with the top one highlighted above.
+        st.markdown("## 🌟 Shortlisted Candidates Overview")
+        st.caption("Candidates meeting your score and experience criteria.")
+
+        shortlisted_candidates = df_results[(df_results['Score (%)'] >= cutoff_score) & (df_results['Years Experience'] >= min_experience)]
+
+        if not shortlisted_candidates.empty:
+            st.success(f"**{len(shortlisted_candidates)}** candidate(s) meet your specified criteria (Score ≥ {cutoff_score}%, Experience ≥ {min_experience} years).")
+            
+            # Display a concise table for shortlisted candidates
+            display_shortlisted_summary_cols = [
+                'Candidate Name',
+                'Score (%)',
+                'Years Experience',
+                'Semantic Similarity',
+                'Email', # Include email here for quick reference
+                'AI Suggestion' # This is the concise AI suggestion
+            ]
+            
+            st.dataframe(
+                shortlisted_candidates[display_shortlisted_summary_cols],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Score (%)": st.column_config.ProgressColumn(
+                        "Score (%)",
+                        help="Matching score against job requirements",
+                        format="%f",
+                        min_value=0,
+                        max_value=100,
+                    ),
+                    "Years Experience": st.column_config.NumberColumn(
+                        "Years Experience",
+                        help="Total years of professional experience",
+                        format="%.1f years",
+                    ),
+                    "Semantic Similarity": st.column_config.NumberColumn(
+                        "Semantic Similarity",
+                        help="Conceptual similarity between JD and Resume (higher is better)",
+                        format="%.2f",
+                        min_value=0,
+                        max_value=1
+                    ),
+                    "AI Suggestion": st.column_config.Column(
+                        "AI Suggestion",
+                        help="AI's concise overall assessment and recommendation"
+                    )
+                }
+            )
+            st.info("For individual detailed AI assessments and action steps, please refer to the table above or the Analytics Dashboard.")
+
+        else:
+            st.warning("No candidates met the defined screening criteria (score cutoff and minimum experience). You might consider adjusting the sliders or reviewing the uploaded resumes/JD.")
+
+        st.markdown("---")
+
+        # Add a 'Tag' column for quick categorization
+        df_results['Tag'] = df_results.apply(lambda row: 
+            "👑 Exceptional Match" if row['Score (%)'] >= 90 and row['Years Experience'] >= 5 and row['Semantic Similarity'] >= 0.85 else (
+            "🔥 Strong Candidate" if row['Score (%)'] >= 80 and row['Years Experience'] >= 3 and row['Semantic Similarity'] >= 0.7 else (
+            "✨ Promising Fit" if row['Score (%)'] >= 60 and row['Years Experience'] >= 1 else (
+            "⚠️ Needs Review" if row['Score (%)'] >= 40 else 
+            "❌ Limited Match"))), axis=1)
+
+        st.markdown("## 📋 Comprehensive Candidate Results Table")
+        st.caption("Full details for all processed resumes. **For deep dive analytics and keyword breakdowns, refer to the Analytics Dashboard.**")
+        
+        # Define columns to display in the comprehensive table
+        comprehensive_cols = [
+            'Candidate Name',
+            'Score (%)',
+            'Years Experience',
+            'Semantic Similarity',
+            'Tag', # Keep the custom tag
+            'Email',
+            'AI Suggestion', # This will still contain the concise AI suggestion text
+            'Matched Skills', # Changed from Matched Keywords to Matched Skills as per previous code
+            'Missing Skills',
+            # 'Resume Raw Text' # Removed from default display to keep table manageable, can be viewed in Analytics
+        ]
+        
+        # Ensure all columns exist before trying to display them
+        final_display_cols = [col for col in comprehensive_cols if col in df_results.columns]
 
         st.dataframe(
-            df_display[['Candidate Name', 'Similarity Score', 'Predicted Status', 'Match Level', 'Action']],
-            hide_index=True,
+            df_results[final_display_cols],
             use_container_width=True,
+            hide_index=True,
             column_config={
-                "Action": st.column_config.Button(
-                    label="View Details",
-                    help="Click to see full details and actions for this resume.",
-                    key="view_details_button_col"
-                )
+                "Score (%)": st.column_config.ProgressColumn(
+                    "Score (%)",
+                    help="Matching score against job requirements",
+                    format="%f",
+                    min_value=0,
+                    max_value=100,
+                ),
+                "Years Experience": st.column_config.NumberColumn(
+                    "Years Experience",
+                    help="Total years of professional experience",
+                    format="%.1f years",
+                ),
+                "Semantic Similarity": st.column_config.NumberColumn(
+                    "Semantic Similarity",
+                    help="Conceptual similarity between JD and Resume (higher is better)",
+                    format="%.2f",
+                    min_value=0,
+                    max_value=1
+                ),
+                "AI Suggestion": st.column_config.Column(
+                    "AI Suggestion",
+                    help="AI's concise overall assessment and recommendation"
+                ),
+                "Matched Skills": st.column_config.Column(
+                    "Matched Skills",
+                    help="Keywords found in both JD and Resume"
+                ),
+                "Missing Skills": st.column_config.Column(
+                    "Missing Skills",
+                    help="Key skills from JD not found in Resume"
+                ),
             }
         )
 
-        # Handle 'View Details' button clicks
-        for i, row in df_display.iterrows():
-            if st.session_state.get(f"view_details_button_col:{i}"):
-                st.session_state.display_detail_for_resume = i
-                break # Exit loop once a button is clicked to prevent multiple triggers
-
-        # Display detailed view if a resume is selected
-        if st.session_state.display_detail_for_resume is not None:
-            idx = st.session_state.display_detail_for_resume
-            candidate_row = st.session_state.screening_results.iloc[idx]
-            
-            st.markdown("---")
-            st.subheader(f"Detailed View for {candidate_row['Candidate Name']}")
-
-            col_info1, col_info2 = st.columns(2)
-            with col_info1:
-                st.write(f"**Similarity Score:** {candidate_row['Similarity Score']}")
-                st.write(f"**Predicted Status:** {candidate_row['Predicted Status']}")
-                st.write(f"**Match Level:** {candidate_row['Match Level']}")
-            with col_info2:
-                st.write(f"**Email:** {candidate_row['Email']}")
-                st.write(f"**Phone:** {candidate_row['Phone']}")
-                # Create a mailto link
-                email_subject = urllib.parse.quote(f"Regarding your application for [Job Title] - {candidate_row['Candidate Name']}")
-                email_body = urllib.parse.quote("Dear [Candidate Name],\n\n...")
-                mailto_link = f"mailto:{candidate_row['Email']}?subject={email_subject}&body={email_body}"
-                st.markdown(f"**[Contact Candidate via Email]({mailto_link})**")
-
-
-            st.markdown("---")
-            st.write("#### Skills & Keywords Analysis")
-            st.write(f"**Matched Skills (from Master List):** {candidate_row['Matched Skills']}")
-            st.write(f"**Missing Skills (from Master List):** {candidate_row['Missing Skills']}")
-            st.write(f"**Keywords found in both JD & Resume:** {candidate_row['Keywords in JD & Resume']}")
-
-            st.write("#### Resume Word Cloud (Skills/Keywords)")
-            generate_word_cloud(candidate_row["WordCloudText"])
-
-            st.write("#### Full Resume Text Preview")
-            with st.expander("Click to view full resume text"):
-                st.text_area(f"Resume Text for {candidate_row['Candidate Name']}", 
-                             candidate_row['Resume Text'], height=300, disabled=True)
-
-            # Generative AI (Gemini Pro) integration - COMMENTED OUT AS PER USER REQUEST
-            # st.markdown("---")
-            # st.write("#### AI-Powered Interview Questions (Generated by Gemini Pro)")
-            # if st.button(f"Generate Questions for {candidate_row['Candidate Name']}", key=f"gen_q_{idx}"):
-            #     with st.spinner("Generating interview questions..."):
-            #         questions = generate_interview_questions(candidate_row['Resume Text'], job_description)
-            #         for i, q in enumerate(questions):
-            #             st.write(f"{i+1}. {q}")
-            #     log_user_action(st.session_state.user_email, "INTERVIEW_QUESTIONS_GENERATED", {"candidate_name": candidate_row['Candidate Name'], "num_questions": len(questions)})
-
-
-            # Option to download individual resume
-            st.markdown("---")
-            st.write("#### Download Resume")
-            pdf_name = candidate_row['Resume Name']
-            # Find the original uploaded file object to get its bytes
-            original_file_obj = next((f for f in uploaded_files if f.name == pdf_name), None)
-
-            if original_file_obj:
-                original_file_obj.seek(0) # Go to the beginning of the file-like object
-                st.download_button(
-                    label=f"Download {pdf_name}",
-                    data=original_file_obj.read(),
-                    file_name=pdf_name,
-                    mime="application/pdf",
-                    key=f"download_{idx}"
-                )
-            else:
-                st.warning(f"Original file '{pdf_name}' not found for direct download.")
-            
-            st.button("↩️ Back to Results Table", key="back_to_results", 
-                      on_click=lambda: st.session_state.update(display_detail_for_resume=None))
-
-        # Download All Results
-        st.markdown("---")
-        st.subheader("5. Download All Results")
-        csv_data = st.session_state.screening_results.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="Download All Screening Results as CSV",
-            data=csv_data,
-            file_name="resume_screening_results.csv",
-            mime="text/csv",
-            key="download_all_csv"
-        )
+        st.info("Remember to check the Analytics Dashboard for in-depth visualizations of skill overlaps, gaps, and other metrics!")
     else:
-        st.info("Upload resumes and enter a job description to see screening results here.")
+        st.info("Please upload a Job Description and at least one Resume to begin the screening process.")
 
-# Entry point for the screener module when imported by main.py
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# This block ensures that if screener.py is run directly, it initializes Streamlit
 if __name__ == "__main__":
-    st.set_page_config(layout="wide", page_title="Resume Screener Pro")
-    st.title("Resume Screener Pro (Standalone Test)")
+    st.set_page_config(layout="wide", page_title="Resume Screener")
+    st.title("Resume Screener (Standalone Test Mode)")
+
     # Mock user session state for standalone testing
     if "user_email" not in st.session_state:
-        st.session_state.user_email = "test_user@example.com"
-        st.info("Running in standalone mode. Mocking user: test_user@example.com")
+        st.session_state.user_email = "test_screener_user@example.com"
+        st.info("Running in standalone mode. Mocking user: test_screener_user@example.com")
     
-    resume_screener_page()
+    # Initialize screening_results if not present for standalone run
+    if 'screening_results' not in st.session_state:
+        st.session_state['screening_results'] = pd.DataFrame()
+    
+    # Dummy required skills and min_experience for standalone, ensuring consistency with session_state usage
+    if 'screening_min_experience' not in st.session_state:
+        st.session_state['screening_min_experience'] = 2
+    if 'screening_cutoff_score' not in st.session_state:
+        st.session_state['screening_cutoff_score'] = 75
+
+    resume_screener_page() # Call the main function for the page
