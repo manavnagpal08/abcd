@@ -319,7 +319,133 @@ MASTER_SKILLS = set([
     "Esports League Databases"
 ])
 
-# --- Helpers ---
+# --- Page Styling ---
+st.markdown("""
+<style>
+.st-emotion-cache-1czw38s {
+    padding-top: 10px;
+}
+.screener-container {
+    padding: 2rem;
+    background: rgba(255, 255, 255, 0.95);
+    border-radius: 20px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.08);
+    animation: fadeInSlide 0.7s ease-in-out;
+    margin-bottom: 2rem;
+}
+@keyframes fadeInSlide {
+    0% { opacity: 0; transform: translateY(20px); }
+    100% { opacity: 1; transform: translateY(0); }
+}
+h2 {
+    color: #00cec9;
+    font-weight: 700;
+}
+.stMetric {
+    background-color: #f0f2f6;
+    border-radius: 10px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+}
+.stProgress > div > div > div > div {
+    background-color: #00cec9 !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# --- Helper Functions ---
+@st.cache_data(show_spinner=False)
+def extract_text_from_pdf(pdf_file):
+    """Extracts text from a PDF file using pdfplumber."""
+    try:
+        with pdfplumber.open(pdf_file) as pdf:
+            text = ''.join(page.extract_text() or '' for page in pdf.pages)
+        return text
+    except Exception as e:
+        log_system_event("ERROR", "PDF_EXTRACTION_FAILED", {"file": pdf_file.name, "error": str(e), "traceback": traceback.format_exc()})
+        return None
+
+def extract_years_of_experience(text):
+    """
+    Extracts years of experience from text.
+    Looks for patterns like 'X years experience', 'X+ years', 'experience of X years'.
+    Returns the maximum number of years found.
+    """
+    text = text.lower()
+    total_months = 0
+    job_date_ranges = re.findall(
+        r'(\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{4})\s*(?:to|–|-)\s*(present|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{4})',
+        text
+    )
+
+    for start, end in job_date_ranges:
+        try:
+            start_date = datetime.strptime(start.strip(), '%b %Y')
+        except ValueError:
+            try:
+                start_date = datetime.strptime(start.strip(), '%B %Y')
+            except ValueError:
+                continue
+
+        if end.strip() == 'present':
+            end_date = datetime.now()
+        else:
+            try:
+                end_date = datetime.strptime(end.strip(), '%b %Y')
+            except ValueError:
+                try:
+                    end_date = datetime.strptime(end.strip(), '%B %Y')
+                except ValueError:
+                    continue
+
+        delta_months = (end_date.year - start_date.year) * 12 + (end_date.month - start_date.month)
+        total_months += max(delta_months, 0)
+
+    if total_months == 0:
+        match = re.search(r'(\d+(?:\.\d+)?)\s*(\+)?\s*(year|yrs|years)\b', text)
+        if not match:
+            match = re.search(r'experience[^\d]{0,10}(\d+(?:\.\d+)?)', text)
+        if match:
+            try:
+                return float(match.group(1))
+            except ValueError:
+                log_system_event("WARNING", "EXPERIENCE_PARSE_ERROR", {"text_snippet": text[:50], "error": "Could not convert to float"})
+                return 0.0
+    return round(total_months / 12, 1)
+
+def extract_contact_info(text):
+    """Extracts email and phone number using regex."""
+    email_match = re.search(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', text)
+    phone_match = re.search(r'(\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', text)
+    return email_match.group(0) if email_match else "N/A", phone_match.group(0) if phone_match else "N/A"
+
+def generate_ai_suggestion(score, years_exp, missing_skills, required_skills):
+    """Generates an AI-like suggestion based on screening criteria."""
+    # Retrieve cutoff values from session state, with defaults
+    cutoff_score = st.session_state.get('screening_cutoff_score', 75)
+    min_exp_required = st.session_state.get('screening_min_experience', 2)
+
+    if score >= 90 and years_exp >= min_exp_required:
+        return "Strongly Recommended for Interview: Excellent match!"
+    elif score >= cutoff_score and years_exp >= min_exp_required:
+        return "Recommended for Interview: Good potential."
+    elif score >= 60 and years_exp < min_exp_required and not missing_skills:
+        return "Consider for Junior Role/Training: High score, but less experience."
+    elif score >= 60 and len(missing_skills) <= len(required_skills) / 3:
+        return "Potential Match with Skill Gap: Requires review of missing skills."
+    else:
+        return "Not a Direct Match: Consider for other roles or re-skill."
+
+def clean_text_for_wordcloud(text):
+    """Basic cleaning for word cloud to remove non-alphanumeric and extra spaces."""
+    # Remove special characters, numbers, and convert to lowercase
+    text = re.sub(r'[^a-zA-Z\s]', '', text)
+    # Remove common resume sections or generic words that won't add value
+    stop_words = ["experience", "years", "skills", "education", "project", "work", "roles", "description", "responsibilities", "knowledge", "ability", "developed", "used", "proficient", "strong"]
+    words = text.lower().split()
+    cleaned_words = [word for word in words if word not in stop_words and len(word) > 2]
+    return " ".join(cleaned_words)
+
 def clean_text(text):
     """Cleans text by removing newlines, extra spaces, and non-ASCII characters."""
     text = re.sub(r'\n', ' ', text)
@@ -377,50 +503,6 @@ def extract_text_from_pdf(uploaded_file):
     except Exception as e:
         log_system_event("ERROR", "PDF_EXTRACTION_FAILED", {"filename": uploaded_file.name, "error": str(e), "traceback": traceback.format_exc()})
         return f"[ERROR] {str(e)}"
-
-def extract_years_of_experience(text):
-    """Extracts years of experience from a given text by parsing date ranges or keywords."""
-    text = text.lower()
-    total_months = 0
-    job_date_ranges = re.findall(
-        r'(\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{4})\s*(?:to|–|-)\s*(present|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{4})',
-        text
-    )
-
-    for start, end in job_date_ranges:
-        try:
-            start_date = datetime.strptime(start.strip(), '%b %Y')
-        except ValueError:
-            try:
-                start_date = datetime.strptime(start.strip(), '%B %Y')
-            except ValueError:
-                continue
-
-        if end.strip() == 'present':
-            end_date = datetime.now()
-        else:
-            try:
-                end_date = datetime.strptime(end.strip(), '%b %Y')
-            except ValueError:
-                try:
-                    end_date = datetime.strptime(end.strip(), '%B %Y')
-                except ValueError:
-                    continue
-
-        delta_months = (end_date.year - start_date.year) * 12 + (end_date.month - start_date.month)
-        total_months += max(delta_months, 0)
-
-    if total_months == 0:
-        match = re.search(r'(\d+(?:\.\d+)?)\s*(\+)?\s*(year|yrs|years)\b', text)
-        if not match:
-            match = re.search(r'experience[^\d]{0,10}(\d+(?:\.\d+)?)', text)
-        if match:
-            try:
-                return float(match.group(1))
-            except ValueError:
-                log_system_event("WARNING", "EXPERIENCE_PARSE_ERROR", {"text_snippet": text[:50], "error": "Could not convert to float"})
-                return 0.0
-    return round(total_months / 12, 1)
 
 def extract_email(text):
     """Extracts an email address from the given text."""
@@ -1055,3 +1137,25 @@ def resume_screener_page():
         st.info("Please upload a Job Description and at least one Resume to begin the screening process.")
 
     st.markdown("</div>", unsafe_allow_html=True)
+
+# This block ensures that if screener.py is run directly, it initializes Streamlit
+if __name__ == "__main__":
+    st.set_page_config(layout="wide", page_title="Resume Screener")
+    st.title("Resume Screener (Standalone Test Mode)")
+
+    # Mock user session state for standalone testing
+    if "user_email" not in st.session_state:
+        st.session_state.user_email = "test_screener_user@example.com"
+        st.info("Running in standalone mode. Mocking user: test_screener_user@example.com")
+    
+    # Initialize screening_results if not present for standalone run
+    if 'screening_results' not in st.session_state:
+        st.session_state['screening_results'] = pd.DataFrame()
+    
+    # Dummy required skills and min_experience for standalone, ensuring consistency with session_state usage
+    if 'screening_min_experience' not in st.session_state:
+        st.session_state['screening_min_experience'] = 2
+    if 'screening_cutoff_score' not in st.session_state:
+        st.session_state['screening_cutoff_score'] = 75
+
+    resume_screener_page() # Call the main function for the page
