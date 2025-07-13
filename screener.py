@@ -18,6 +18,8 @@ import traceback # Added for detailed error logging
 
 # Import logging functions
 from utils.logger import log_user_action, update_metrics_summary, log_system_event
+# Assuming utils.config exists, if not, remove this line or create the file
+# from utils.config import load_config
 
 # For Generative AI (Google Gemini Pro) - COMMENTED OUT AS PER USER REQUEST
 # import google.generativeai as genai
@@ -46,6 +48,8 @@ def load_ml_model():
         model = SentenceTransformer("all-MiniLM-L6-v2")
         # Ensure ml_screening_model.pkl exists before loading
         if not os.path.exists("ml_screening_model.pkl"):
+            # Provide a more user-friendly message if the model file is missing
+            st.error("Model file 'ml_screening_model.pkl' not found. Please ensure it's in the same directory as this script.")
             raise FileNotFoundError("ml_screening_model.pkl not found.")
         ml_model = joblib.load("ml_screening_model.pkl")
         log_system_event("INFO", "ML_MODEL_LOADED", {"model_name": "all-MiniLM-L6-v2", "ml_model_file": "ml_screening_model.pkl"})
@@ -540,9 +544,8 @@ def semantic_score(resume_text, jd_text, years_exp):
 
     if ml_model is None or model is None:
         log_system_event("WARNING", "ML_MODELS_NOT_LOADED_FOR_SEMANTIC_SCORE", {"reason": "Falling back to basic score"})
-        st.warning("ML models not loaded. Providing basic score and generic feedback.")
+        # Removed st.warning here as it's handled by load_ml_model
         # Simplified fallback for score and feedback
-        # Use the new extraction logic for fallback as well
         resume_words = extract_relevant_keywords(resume_clean, MASTER_SKILLS if MASTER_SKILLS else STOP_WORDS)
         jd_words = extract_relevant_keywords(jd_clean, MASTER_SKILLS if MASTER_SKILLS else STOP_WORDS)
         
@@ -724,6 +727,8 @@ def resume_screener_page():
 
         progress_text = "Operation in progress. Please wait."
         my_bar = st.progress(0, text=progress_text)
+        # Initialize status_text here
+        status_text = st.empty()
         
         log_user_action(user_email, "SCREENING_STARTED", {
             "num_resumes": len(uploaded_resumes),
@@ -843,7 +848,7 @@ def resume_screener_page():
             update_metrics_summary("user_resumes_screened", 1, user_email=user_email)
         
         my_bar.empty()
-        status_text.empty()
+        status_text.empty() # Clear the status text after processing
         st.success("Screening complete! Check results below.")
         log_user_action(user_email, "SCREENING_COMPLETE_SUCCESS", {"num_processed": len(results), "num_failed_to_parse": len(uploaded_resumes) - len(results)})
 
@@ -892,7 +897,10 @@ def resume_screener_page():
         st.caption("A concise, AI-powered assessment for the most suitable candidate.")
         
         if not df_results.empty:
-            top_candidate = df_results.iloc[0] # Get the top candidate (already sorted by score)
+            # Sort by score descending to ensure top_candidate is truly the highest scored
+            df_results_sorted = df_results.sort_values(by='Score (%)', ascending=False).reset_index(drop=True)
+            top_candidate = df_results_sorted.iloc[0] 
+
             st.markdown(f"### **{top_candidate['Candidate Name']}**")
             st.markdown(f"**Score:** {top_candidate['Score (%)']:.2f}% | **Experience:** {top_candidate['Years Experience']:.1f} years | **Semantic Similarity:** {top_candidate['Semantic Similarity']:.2f}")
             st.markdown(f"**AI Assessment:**")
@@ -903,7 +911,7 @@ def resume_screener_page():
                 mailto_link_top = create_mailto_link(
                     recipient_email=top_candidate['Email'],
                     candidate_name=top_candidate['Candidate Name'],
-                    job_title=jd_option if jd_option != "Paste Manually" else "Job Opportunity" # Use selected JD name
+                    job_title=jd_source if jd_source != "Paste Manually" else "Job Opportunity" # Use selected JD name
                 )
                 st.markdown(f'<a href="{mailto_link_top}" target="_blank"><button style="background-color:#00cec9;color:white;border:none;padding:10px 20px;text-align:center;text-decoration:none;display:inline-block;font-size:16px;margin:4px 2px;cursor:pointer;border-radius:8px;">📧 Invite Top Candidate for Interview</button></a>', unsafe_allow_html=True)
                 log_user_action(user_email, "TOP_CANDIDATE_EMAIL_LINK_GENERATED", {"candidate_name": top_candidate['Candidate Name']})
