@@ -13,9 +13,26 @@ from login import (
     is_current_user_admin
 )
 # Assuming these files exist in your project structure (you'll need to create them)
-# from email_sender import send_email_to_candidate
-# from screener import resume_screener_page
-# from analytics import analytics_dashboard_page
+from email_sender import send_email_to_candidate
+from screener import resume_screener_page
+from analytics import analytics_dashboard_page
+from admin_panel import admin_panel_page # Import the admin panel page
+from utils.logger import log_user_action # Import the logging function
+
+# For pages that were using exec(f.read()), we will now import functions directly.
+# You will need to define a main function in each of these files, e.g., manage_jds_page()
+try:
+    from manage_jds import manage_jds_page
+except ImportError:
+    manage_jds_page = None # Set to None if import fails, handle later
+try:
+    from search import search_resumes_page
+except ImportError:
+    search_resumes_page = None # Set to None if import fails, handle later
+try:
+    from notes import candidate_notes_page
+except ImportError:
+    candidate_notes_page = None # Set to None if import fails, handle later
 
 
 # --- Page Config ---
@@ -98,7 +115,7 @@ html, body, [class*="css"] {
 }
 .custom-dashboard-button:hover {
     transform: translateY(-6px);
-    box-shadow: 0 10px 24px rgba(0,0,0,0.1);
+    box_shadow: 0 10px 24px rgba(0,0,0,0.1);
     background: linear-gradient(145deg, #e0f7fa, #f1f1f1);
 }
 .custom-dashboard-button span { /* For the icon */
@@ -157,7 +174,7 @@ if "tab_override" in st.session_state:
 # ======================
 if tab == "🏠 Dashboard":
     # The div for "dashboard-header" will now have custom styling
-    st.markdown('<div class="dashboard-header">📊 Overview Dashboard</div>', unsafe_allow_html=True) 
+    st.markdown('<div class="dashboard-header">📊 Overview Dashboard</div>', unsafe_allow_html=True)
 
     # Initialize metrics
     resume_count = 0
@@ -174,7 +191,7 @@ if tab == "🏠 Dashboard":
         try:
             df_results = pd.DataFrame(st.session_state['screening_results'])
             resume_count = df_results["File Name"].nunique()
-            
+
             cutoff_score = st.session_state.get('screening_cutoff_score', 75)
             min_exp_required = st.session_state.get('screening_min_experience', 2)
 
@@ -196,7 +213,7 @@ if tab == "🏠 Dashboard":
 
     with col1:
         # The div for "dashboard-card" will now have custom styling
-        st.markdown(f"""<div class="dashboard-card">📂 <br><b>{resume_count}</b><br>Resumes Screened</div>""", unsafe_allow_html=True) 
+        st.markdown(f"""<div class="dashboard-card">📂 <br><b>{resume_count}</b><br>Resumes Screened</div>""", unsafe_allow_html=True)
         if resume_count > 0:
             with st.expander(f"View {resume_count} Screened Names"):
                 for idx, row in df_results.iterrows():
@@ -208,11 +225,11 @@ if tab == "🏠 Dashboard":
 
     with col2:
         # The div for "dashboard-card" will now have custom styling
-        st.markdown(f"""<div class="dashboard-card">📝 <br><b>{jd_count}</b><br>Job Descriptions</div>""", unsafe_allow_html=True) 
+        st.markdown(f"""<div class="dashboard-card">📝 <br><b>{jd_count}</b><br>Job Descriptions</div>""", unsafe_allow_html=True)
 
     with col3:
         # The div for "dashboard-card" will now have custom styling
-        st.markdown(f"""<div class="dashboard-card">✅ <br><b>{shortlisted}</b><br>Shortlisted Candidates</div>""", unsafe_allow_html=True) 
+        st.markdown(f"""<div class="dashboard-card">✅ <br><b>{shortlisted}</b><br>Shortlisted Candidates</div>""", unsafe_allow_html=True)
         if shortlisted > 0:
             with st.expander(f"View {shortlisted} Shortlisted Names"):
                 for idx, row in shortlisted_df.iterrows():
@@ -224,7 +241,7 @@ if tab == "🏠 Dashboard":
 
     col4, col5, col6 = st.columns(3)
     # The div for "dashboard-card" will now have custom styling
-    col4.markdown(f"""<div class="dashboard-card">📈 <br><b>{avg_score:.1f}%</b><br>Avg Score</div>""", unsafe_allow_html=True) 
+    col4.markdown(f"""<div class="dashboard-card">📈 <br><b>{avg_score:.1f}%</b><br>Avg Score</div>""", unsafe_allow_html=True)
 
     with col5:
         # The div for "custom-dashboard-button" will now have custom styling
@@ -233,7 +250,7 @@ if tab == "🏠 Dashboard":
             <span>🧠</span>
             <div>Resume Screener</div>
         </div>
-        """, unsafe_allow_html=True) 
+        """, unsafe_allow_html=True)
         if st.button("🧠 Resume Screener", key="dashboard_screener_button"):
             st.session_state.tab_override = '🧠 Resume Screener'
             st.rerun()
@@ -245,7 +262,7 @@ if tab == "🏠 Dashboard":
             <span>📤</span>
             <div>Email Candidates</div>
         </div>
-        """, unsafe_allow_html=True) 
+        """, unsafe_allow_html=True)
         if st.button("📤 Email Candidates", key="dashboard_email_button"):
             st.session_state.tab_override = '📤 Email Candidates'
             st.rerun()
@@ -292,12 +309,12 @@ if tab == "🏠 Dashboard":
                 df_results['Experience Group'] = pd.cut(df_results['Years Experience'], bins=bins, labels=labels, right=False)
                 exp_counts = df_results['Experience Group'].value_counts().sort_index()
                 fig_bar, ax2 = plt.subplots(figsize=(5, 4))
-                
+
                 if dark_mode:
                     sns.barplot(x=exp_counts.index, y=exp_counts.values, palette="viridis", ax=ax2)
                 else:
                     sns.barplot(x=exp_counts.index, y=exp_counts.values, palette="coolwarm", ax=ax2)
-                
+
                 # These might need manual color adjustments for dark mode if they don't pick up plt.style.use('dark_background') fully
                 ax2.set_ylabel("Candidates", color='white' if dark_mode else 'black')
                 ax2.set_xlabel("Experience Range", color='white' if dark_mode else 'black')
@@ -306,7 +323,7 @@ if tab == "🏠 Dashboard":
                 ax2.title.set_color('white' if dark_mode else 'black')
                 st.pyplot(fig_bar)
                 plt.close(fig_bar)
-            
+
             st.markdown("##### 📋 Candidate Quality Breakdown")
             tag_summary = df_results['Tag'].value_counts().reset_index()
             tag_summary.columns = ['Candidate Tag', 'Count']
@@ -324,7 +341,7 @@ if tab == "🏠 Dashboard":
 
                 if not skill_counts.empty:
                     fig_skills, ax3 = plt.subplots(figsize=(5.8, 3))
-                    
+
                     if dark_mode:
                         palette = sns.color_palette("magma", len(skill_counts))
                     else:
@@ -340,7 +357,7 @@ if tab == "🏠 Dashboard":
                     ax3.set_xlabel("Frequency", fontsize=11, color='white' if dark_mode else 'black')
                     ax3.set_ylabel("Skill", fontsize=11, color='white' if dark_mode else 'black')
                     ax3.tick_params(labelsize=10, colors='white' if dark_mode else 'black')
-                    
+
                     for i, v in enumerate(skill_counts.values):
                         ax3.text(v + 0.3, i, str(v), color='white' if dark_mode else 'black', va='center', fontweight='bold', fontsize=9)
 
@@ -361,106 +378,74 @@ if tab == "🏠 Dashboard":
 # ======================
 elif tab == "⚙️ Admin Tools":
     # The div for "dashboard-header" will now have custom styling
-    st.markdown('<div class="dashboard-header">⚙️ Admin Tools</div>', unsafe_allow_html=True) 
+    st.markdown('<div class="dashboard-header">⚙️ Admin Tools</div>', unsafe_allow_html=True)
     if is_admin:
-        st.write("Welcome, Administrator! Here you can manage user accounts.")
-        st.markdown("---")
-
-        admin_registration_section() # Create New User Form
-        st.markdown("---")
-
-        admin_password_reset_section() # Reset User Password Form
-        st.markdown("---")
-
-        admin_disable_enable_user_section() # Disable/Enable User Form
-        st.markdown("---")
-
-        st.subheader("👥 All Registered Users")
-        st.warning("⚠️ **SECURITY WARNING:** This table displays usernames (email IDs) and **hashed passwords**. This is for **ADMINISTRATIVE DEBUGGING ONLY IN A SECURE ENVIRONMENT**. **NEVER expose this in a public or production application.**")
-        try:
-            users_data = load_users()
-            if users_data:
-                display_users = []
-                for user, data in users_data.items():
-                    hashed_pass = data.get("password", data) if isinstance(data, dict) else data
-                    status = data.get("status", "N/A") if isinstance(data, dict) else "N/A"
-                    display_users.append([user, hashed_pass, status])
-                st.dataframe(pd.DataFrame(display_users, columns=["Email/Username", "Hashed Password (DO NOT EXPOSE)", "Status"]), use_container_width=True)
-            else:
-                st.info("No users registered yet.")
-        except Exception as e:
-            st.error(f"Error loading user data: {e}")
+        admin_panel_page() # Call the admin panel function
     else:
         st.error("🔒 Access Denied: You must be an administrator to view this page.")
 
 # ======================
 # Page Routing via function calls (remaining pages)
 # ======================
-# Placeholder for screener.py, email_sender.py, analytics.py, manage_jds.py, search.py, notes.py
-# You need to ensure these files exist and define the respective page functions.
-# For demonstration, these will print a message if the files are not available.
 
 elif tab == "🧠 Resume Screener":
     try:
-        from screener import resume_screener_page
         resume_screener_page()
-    except ImportError:
-        st.info("`screener.py` not found or function not defined. Please create it.")
+    except NameError:
+        st.info("`screener.py` not imported correctly. Please ensure it defines `resume_screener_page()`.")
     except Exception as e:
         st.error(f"Error loading Resume Screener: {e}")
 
 
 elif tab == "📁 Manage JDs":
-    try:
-        # Assuming manage_jds.py contains its Streamlit code directly or in a function
-        with open("manage_jds.py", encoding="utf-8") as f:
-            exec(f.read())
-    except FileNotFoundError:
-        st.info("`manage_jds.py` not found. Please ensure the file exists in the same directory.")
-    except Exception as e:
-        st.error(f"Error loading Manage JDs: {e}")
+    if manage_jds_page:
+        try:
+            manage_jds_page()
+        except Exception as e:
+            st.error(f"Error loading Manage JDs: {e}")
+    else:
+        st.info("`manage_jds.py` not found or function not defined. Please create it and define `manage_jds_page()`.")
 
 
 elif tab == "📊 Screening Analytics":
     try:
-        from analytics import analytics_dashboard_page
         analytics_dashboard_page()
-    except ImportError:
-        st.info("`analytics.py` not found or function not defined. Please create it.")
+    except NameError:
+        st.info("`analytics.py` not imported correctly. Please ensure it defines `analytics_dashboard_page()`.")
     except Exception as e:
         st.error(f"Error loading Screening Analytics: {e}")
 
 elif tab == "📤 Email Candidates":
     try:
-        from email_sender import send_email_to_candidate
         send_email_to_candidate()
-    except ImportError:
-        st.info("`email_sender.py` not found or function not defined. Please create it.")
+    except NameError:
+        st.info("`email_sender.py` not imported correctly. Please ensure it defines `send_email_to_candidate()`.")
     except Exception as e:
         st.error(f"Error loading Email Candidates: {e}")
 
 
 elif tab == "🔍 Search Resumes":
-    try:
-        # Assuming search.py contains its Streamlit code directly or in a function
-        with open("search.py", encoding="utf-8") as f:
-            exec(f.read())
-    except FileNotFoundError:
-        st.info("`search.py` not found. Please ensure the file exists in the same directory.")
-    except Exception as e:
-        st.error(f"Error loading Search Resumes: {e}")
+    if search_resumes_page:
+        try:
+            search_resumes_page()
+        except Exception as e:
+            st.error(f"Error loading Search Resumes: {e}")
+    else:
+        st.info("`search.py` not found or function not defined. Please create it and define `search_resumes_page()`.")
 
 elif tab == "📝 Candidate Notes":
-    try:
-        # Assuming notes.py contains its Streamlit code directly or in a function
-        with open("notes.py", encoding="utf-8") as f:
-            exec(f.read())
-    except FileNotFoundError:
-        st.info("`notes.py` not found. Please ensure the file exists in the same directory.")
-    except Exception as e:
-        st.error(f"Error loading Candidate Notes: {e}")
+    if candidate_notes_page:
+        try:
+            candidate_notes_page()
+        except Exception as e:
+            st.error(f"Error loading Candidate Notes: {e}")
+    else:
+        st.info("`notes.py` not found or function not defined. Please create it and define `candidate_notes_page()`.")
 
 elif tab == "🚪 Logout":
+    if st.session_state.get('authenticated'):
+        user_email = st.session_state.get('user_email', 'unknown_user')
+        log_user_action(user_email, "Logout", {"status": "success"})
     st.session_state.authenticated = False
     st.session_state.pop('username', None)
     st.success("✅ Logged out.")
