@@ -5,11 +5,12 @@ import seaborn as sns
 from wordcloud import WordCloud
 import os
 import json
+import numpy as np # Added for numpy.random.uniform in dashboard section
 
 # Import the page functions from their respective files
 # Corrected import for email_page.py (was email_sender) and function name
 from email_page import email_candidates_page
-from screener import resume_screener_page
+from screener import resume_screener_page # Ensure 'resume_screener_page' is defined as a top-level function in screener.py
 from analytics import analytics_dashboard_page
 from admin_panel import admin_panel_page # Import the admin panel page
 from utils.logger import log_user_action # Import the logging function
