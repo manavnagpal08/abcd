@@ -5,29 +5,16 @@ import seaborn as sns
 from wordcloud import WordCloud
 import os
 import json
-import numpy as np # Added for numpy.random.uniform in dashboard section
+import numpy as np
 
 # Import the page functions from their respective files
-# Corrected import for email_page.py (was email_sender) and function name
 from email_page import email_candidates_page
 from analytics import analytics_dashboard_page
 from admin_panel import admin_panel_page # Import the admin panel page
 from utils.logger import log_user_action # Import the logging function
 
-# Conditional import for resume_screener_page
-resume_screener_page = None
-try:
-    from screener import resume_screener_page # Attempt to import the screener page function
-    print("DEBUG: Successfully imported resume_screener_page from screener.py")
-except ImportError as e:
-    print(f"ERROR: Failed to import resume_screener_page from screener.py: {e}")
-    st.error(f"Failed to load Resume Screener functionality: {e}. Please ensure 'screener.py' is correctly configured and there are no conflicting directories.")
-    log_system_event("ERROR", "RESUME_SCREENER_IMPORT_FAILED", {"error": str(e), "traceback": traceback.format_exc()})
-except Exception as e:
-    print(f"ERROR: An unexpected error occurred during import of screener.py: {e}")
-    st.error(f"An unexpected error occurred while loading Resume Screener: {e}")
-    log_system_event("ERROR", "RESUME_SCREENER_IMPORT_UNEXPECTED_ERROR", {"error": str(e), "traceback": traceback.format_exc()})
-
+# Resume Screener functionality has been removed due to persistent import errors.
+# The 'resume_screener_page' function and its import are no longer present.
 
 # For pages that were using exec(f.read()), we will now import functions directly.
 # You will need to define a main function in each of these files, e.g., manage_jds_page()
@@ -36,12 +23,10 @@ try:
 except ImportError:
     manage_jds_page = None # Set to None if import fails, handle later
 try:
-    # Corrected import for search.py function name
     from search import search_page
 except ImportError:
     search_page = None # Set to None if import fails, handle later
 try:
-    # Corrected import for notes.py function name
     from notes import notes_page
 except ImportError:
     notes_page = None # Set to None if import fails, handle later
@@ -52,12 +37,9 @@ st.set_page_config(page_title="ScreenerPro – AI Hiring Dashboard", layout="wid
 
 
 # --- Dark Mode Toggle ---
-# Note: The dark mode toggle will still exist, but without the CSS,
-# its visual effect on other elements might be limited to Streamlit's defaults.
 dark_mode = st.sidebar.toggle("🌙 Dark Mode", key="dark_mode_main")
 
 # --- Global Fonts & UI Styling ---
-# This CSS block is now implemented as requested.
 st.markdown("""
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
 <style>
@@ -208,9 +190,7 @@ navigation_options = [
     "🏠 Dashboard", "📁 Manage JDs", "📊 Screening Analytics",
     "📤 Email Candidates", "🔍 Search Resumes", "📝 Candidate Notes"
 ]
-# Only add Resume Screener if it was successfully imported
-if resume_screener_page:
-    navigation_options.insert(1, "🧠 Resume Screener") # Insert after Dashboard
+# Resume Screener tab is now permanently removed from navigation_options
 
 if is_admin: # Only add Admin Tools if the user is an admin
     navigation_options.append("⚙️ Admin Tools")
@@ -248,7 +228,8 @@ if tab == "🏠 Dashboard":
             df_results = pd.DataFrame(st.session_state['screening_results'])
             resume_count = df_results["Resume Name"].nunique() # Use "Resume Name" as per screener.py output
 
-            cutoff_score = st.session_state.get('screening_cutoff_score', 75)
+            # These session state keys might not exist if screener was never run successfully
+            cutoff_score = st.session_state.get('screening_cutoff_score', 75) 
             min_exp_required = st.session_state.get('screening_min_experience', 2)
 
             shortlisted_df = df_results[
@@ -258,11 +239,11 @@ if tab == "🏠 Dashboard":
             shortlisted = shortlisted_df.shape[0]
             avg_score = df_results["Score (%)"].mean()
         except Exception as e:
-            st.error(f"Error processing screening results from session state: {e}")
+            st.error(f"Error processing screening results from session state: {e}. If Resume Screener was removed, this data might be stale or incomplete.")
             df_results = pd.DataFrame()
             shortlisted_df = pd.DataFrame()
     else:
-        st.info("No screening results available in this session yet. Please run the Resume Screener.")
+        st.info("No screening results available in this session yet. Please run the Resume Screener (if available) or other modules.")
         shortlisted_df = pd.DataFrame()
 
     col1, col2, col3 = st.columns(3)
@@ -277,7 +258,7 @@ if tab == "🏠 Dashboard":
         elif 'screening_results' in st.session_state and not st.session_state['screening_results'].empty:
             st.info("No resumes have been screened yet.")
         else:
-            st.info("Run the screener to see screened resumes.")
+            st.info("No screening results to display.")
 
     with col2:
         # The div for "dashboard-card" will now have custom styling
@@ -293,33 +274,21 @@ if tab == "🏠 Dashboard":
         elif 'screening_results' in st.session_state and not st.session_state['screening_results'].empty:
             st.info("No candidates met the current shortlisting criteria.")
         else:
-            st.info("Run the screener to see shortlisted candidates.")
+            st.info("No shortlisted candidates to display.")
 
     col4, col5, col6 = st.columns(3)
     # The div for "dashboard-card" will now have custom styling
     col4.markdown(f"""<div class="dashboard-card">📈 <br><b>{avg_score:.1f}%</b><br>Avg Score</div>""", unsafe_allow_html=True)
 
     with col5:
-        # The div for "custom-dashboard-button" will now have custom styling
-        # Only show button if screener page is available
-        if resume_screener_page:
-            st.markdown("""
-            <div class="custom-dashboard-button" onclick="window.parent.postMessage({streamlit: {type: 'setSessionState', args: ['tab_override', '🧠 Resume Screener']}}, '*');">
-                <span>🧠</span>
-                <div>Resume Screener</div>
-            </div>
-            """, unsafe_allow_html=True)
-            if st.button("🧠 Resume Screener", key="dashboard_screener_button"):
-                st.session_state.tab_override = '🧠 Resume Screener'
-                st.rerun()
-        else:
-            st.markdown("""
-            <div class="custom-dashboard-button" style="opacity: 0.6; cursor: not-allowed;">
-                <span>🚫</span>
-                <div>Resume Screener (Unavailable)</div>
-            </div>
-            """, unsafe_allow_html=True)
-            st.info("Resume Screener functionality is currently unavailable due to an import error. Please check the logs.")
+        # Placeholder for where the Resume Screener button used to be
+        st.markdown("""
+        <div class="custom-dashboard-button" style="opacity: 0.6; cursor: not-allowed;">
+            <span>🚫</span>
+            <div>Resume Screener (Removed)</div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.info("Resume Screener functionality has been removed.")
 
 
     with col6:
@@ -406,7 +375,6 @@ if tab == "🏠 Dashboard":
 
             st.markdown("##### 🧠 Top 5 Most Common Skills")
 
-            # Changed 'Matched Keywords' to 'Matched Skills' as per screener.py output
             if 'Matched Skills' in df_results.columns:
                 all_skills = []
                 for skills in df_results['Matched Skills'].dropna():
@@ -466,20 +434,10 @@ elif tab == "⚙️ Admin Tools":
 # Page Routing via function calls (remaining pages)
 # ======================
 
-elif tab == "🧠 Resume Screener":
-    if resume_screener_page: # Only call if successfully imported
-        try:
-            resume_screener_page()
-        except Exception as e:
-            st.error(f"Error loading Resume Screener: {e}")
-            log_system_event("ERROR", "PAGE_LOAD_FAILED", {"page": "Resume Screener", "error": str(e), "traceback": traceback.format_exc()})
-    else:
-        st.error("Resume Screener functionality is unavailable. Please check the application logs for details on the import error.")
-        log_system_event("INFO", "RESUME_SCREENER_PAGE_UNAVAILABLE", {"reason": "Import failed"})
-
+# The Resume Screener tab and its associated logic are now completely removed.
+# No 'elif tab == "🧠 Resume Screener":' block here.
 
 elif tab == "📁 Manage JDs":
-    # Changed from manage_jds_page to manage_jds_page (assuming it's defined in manage_jds.py)
     if manage_jds_page:
         try:
             manage_jds_page()
@@ -502,7 +460,6 @@ elif tab == "📊 Screening Analytics":
         log_system_event("ERROR", "PAGE_LOAD_FAILED", {"page": "Screening Analytics", "error": str(e), "traceback": traceback.format_exc()})
 
 elif tab == "📤 Email Candidates":
-    # Changed from send_email_to_candidate to email_candidates_page
     try:
         email_candidates_page()
     except NameError:
@@ -514,10 +471,9 @@ elif tab == "📤 Email Candidates":
 
 
 elif tab == "🔍 Search Resumes":
-    # Changed from search_resumes_page to search_page
     if search_page:
         try:
-            search_page() # Corrected: Was notes_page()
+            search_page()
         except Exception as e:
             st.error(f"Error loading Search Resumes: {e}")
             log_system_event("ERROR", "PAGE_LOAD_FAILED", {"page": "Search Resumes", "error": str(e), "traceback": traceback.format_exc()})
@@ -526,7 +482,6 @@ elif tab == "🔍 Search Resumes":
         log_system_event("ERROR", "PAGE_LOAD_FAILED", {"page": "Search Resumes", "error": "`search_page` not imported"})
 
 elif tab == "📝 Candidate Notes":
-    # Changed from candidate_notes_page to notes_page
     if notes_page:
         try:
             notes_page()
