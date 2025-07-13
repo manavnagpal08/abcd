@@ -1055,25 +1055,3 @@ def resume_screener_page():
         st.info("Please upload a Job Description and at least one Resume to begin the screening process.")
 
     st.markdown("</div>", unsafe_allow_html=True)
-
-# This block ensures that if screener.py is run directly, it initializes Streamlit
-if __name__ == "__main__":
-    st.set_page_config(layout="wide", page_title="Resume Screener")
-    st.title("Resume Screener (Standalone Test Mode)")
-
-    # Mock user session state for standalone testing
-    if "user_email" not in st.session_state:
-        st.session_state.user_email = "test_screener_user@example.com"
-        st.info("Running in standalone mode. Mocking user: test_screener_user@example.com")
-    
-    # Initialize screening_results if not present for standalone run
-    if 'screening_results' not in st.session_state:
-        st.session_state['screening_results'] = pd.DataFrame()
-    
-    # Dummy required skills and min_experience for standalone, ensuring consistency with session_state usage
-    if 'screening_min_experience' not in st.session_state:
-        st.session_state['screening_min_experience'] = 2
-    if 'screening_cutoff_score' not in st.session_state:
-        st.session_state['screening_cutoff_score'] = 75
-
-    resume_screener_page() # Call the main function for the page
