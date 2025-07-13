@@ -1158,7 +1158,7 @@ if __name__ == "__main__":
     if 'screening_results' not in st.session_state:
         st.session_state['screening_results'] = pd.DataFrame()
     
-    # Dummy required skills and min_experience for standalone, ensuring consistency with session_state usage
+    # Dummy required skills and min_experience for standalone, suring consistency with session_state usage
     if 'screening_min_experience' not in st.session_state:
         st.session_state['screening_min_experience'] = 2
     if 'screening_cutoff_score' not in st.session_state:
