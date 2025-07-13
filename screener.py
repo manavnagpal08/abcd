@@ -864,7 +864,6 @@ def resume_screener_page():
                 # Add 'stop_words' to TfidfVectorizer for better relevance
                 vectorizer = TfidfVectorizer(stop_words='english')
                 tfidf_matrix = vectorizer.fit_transform(documents)
-                # Corrected typo: tfdf_matrix -> tfidf_matrix
                 cosine_sim = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0] 
                 similarity_score_percent = round(cosine_sim * 100, 2)
             except Exception as e:
