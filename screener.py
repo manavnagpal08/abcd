@@ -1,3 +1,5 @@
+print("DEBUG: screener.py is being loaded.") # Diagnostic print to confirm file is being run/imported
+
 import streamlit as st
 import pdfplumber
 import pandas as pd
@@ -321,6 +323,7 @@ MASTER_SKILLS = set([
     "Esports Player Databases", "Esports Team Databases", "Esports Organization Databases",
     "Esports League Databases"
 ])
+STOP_WORDS = NLTK_STOP_WORDS.union(CUSTOM_STOP_WORDS)
 
 # --- Page Styling ---
 st.markdown("""
@@ -861,7 +864,8 @@ def resume_screener_page():
                 # Add 'stop_words' to TfidfVectorizer for better relevance
                 vectorizer = TfidfVectorizer(stop_words='english')
                 tfidf_matrix = vectorizer.fit_transform(documents)
-                cosine_sim = cosine_similarity(tfidf_matrix[0:1], tfdf_matrix[1:2])[0][0] # Typo: tfdf_matrix instead of tfidf_matrix
+                # Corrected typo: tfdf_matrix -> tfidf_matrix
+                cosine_sim = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0] 
                 similarity_score_percent = round(cosine_sim * 100, 2)
             except Exception as e:
                 similarity_score_percent = 0.0 # Default to 0 if vectorization fails
@@ -1158,7 +1162,7 @@ if __name__ == "__main__":
     if 'screening_results' not in st.session_state:
         st.session_state['screening_results'] = pd.DataFrame()
     
-    # Dummy required skills and min_experience for standalone, suring consistency with session_state usage
+    # Dummy required skills and min_experience for standalone, ensuring consistency with session_state usage
     if 'screening_min_experience' not in st.session_state:
         st.session_state['screening_min_experience'] = 2
     if 'screening_cutoff_score' not in st.session_state:
