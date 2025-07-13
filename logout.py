@@ -1,4 +1,6 @@
 import streamlit as st
+# Import logging functions
+from utils.logger import log_user_action, update_metrics_summary
 
 # --- Logout Style ---
 st.markdown("""
@@ -28,7 +30,26 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- Logout Logic ---
+# Log the logout action before clearing the session state
+if 'user_email' in st.session_state and st.session_state.user_email:
+    log_user_action(st.session_state.user_email, "LOGOUT_SUCCESS")
+    update_metrics_summary("total_logouts", 1)
+    update_metrics_summary("user_logouts", 1, user_email=st.session_state.user_email)
+else:
+    # Handle cases where user_email might not be set (e.g., direct access to logout page)
+    log_user_action("unknown_user", "LOGOUT_ATTEMPT_UNAUTHENTICATED")
+
+# Clear authentication status
 st.session_state.authenticated = False
+# Optionally clear other sensitive session state data upon logout
+# For example:
+if 'user_email' in st.session_state:
+    del st.session_state.user_email
+if 'screening_results' in st.session_state:
+    del st.session_state.screening_results
+# You might want to keep other session state variables if they persist across logins,
+# but for a complete logout, clearing is often preferred.
+
 
 # --- Message UI ---
 st.markdown("""
